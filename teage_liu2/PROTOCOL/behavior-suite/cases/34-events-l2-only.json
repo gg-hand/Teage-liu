@@ -1,0 +1,30 @@
+{
+  "id": "events-l2-only-34",
+  "protocol_version": "v1.0.0",
+  "description": "events E-4(L2 唯一语义通道)+E-7(L3 订阅声明): 声明 observe 的扩展经 after_step 钩子(L2 结构化摘要)获取对话语义,而 L1 逐字增量(text_delta/reasoning_delta)绝不进 L3、绝不达扩展 —— 断言 l3 汇总的 l1_leaked 为 false 且扩展确实收到 L2 调用。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_obs",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after_step"],
+        "capabilities": ["observe"]
+      }
+    ]
+  },
+  "inputs": { "session_id": "s-34", "user_input": "hi" },
+  "expected": {
+    "invocations": [
+      { "hook": "after_step", "extension": "ext_obs" }
+    ],
+    "event_stream": [
+      {
+        "type": "custom:pipeline_l3_result",
+        "payload": { "extensions": ["ext_obs"], "l1_leaked": false }
+      }
+    ],
+    "final": { "termination_reason": "normal" }
+  }
+}

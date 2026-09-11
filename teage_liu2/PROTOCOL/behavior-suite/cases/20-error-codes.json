@@ -1,7 +1,7 @@
 {
   "id": "error-codes-20",
   "protocol_version": "v1.0.0",
-  "description": "错误码日志面锚定(§errors §6 三面模型): 18 码此前在套件中 0 命中。本用例按 scenarios 驱动 HOOK_EXCEPTION / HOOK_TERMINAL_ACTION_IGNORED / TOOL_NO_EXECUTOR / LOOP_MAX_REACHED 四条真实发射路径,经 logging 捕获断言 `CODE: message` 前缀;事件面(LLM_* / HOOK_INVALID_ACTION / CONFIG_*)由用例 16/19/21 与单测覆盖。",
+  "description": "错误码日志面锚定(§errors §6 三面模型): 按 scenarios 驱动 HOOK_EXCEPTION / HOOK_TERMINAL_ACTION_IGNORED / TOOL_NO_EXECUTOR / LOOP_MAX_REACHED / LLM_TIMEOUT / LLM_STREAM_FAILED / LLM_API_ERROR / STORAGE_WRITE_FAILED 八条真实发射路径,经 logging 捕获断言 `CODE: message` 前缀;LLM_CANCELED 为 info 级不入 warning+ 捕获,与其余码由单测覆盖。",
   "setup": {
     "extensions": []
   },
@@ -12,7 +12,11 @@
       { "kind": "raise_on", "hook": "before" },
       { "kind": "terminal_action" },
       { "kind": "tool_path_no_executor" },
-      { "kind": "loop_max" }
+      { "kind": "loop_max" },
+      { "kind": "llm_error", "code": "LLM_TIMEOUT" },
+      { "kind": "llm_error", "code": "LLM_STREAM_FAILED" },
+      { "kind": "llm_error", "code": "LLM_API_ERROR" },
+      { "kind": "storage_write_fail" }
     ]
   },
   "expected": {
@@ -21,7 +25,11 @@
         "HOOK_EXCEPTION",
         "HOOK_TERMINAL_ACTION_IGNORED",
         "TOOL_NO_EXECUTOR",
-        "LOOP_MAX_REACHED"
+        "LOOP_MAX_REACHED",
+        "LLM_TIMEOUT",
+        "LLM_STREAM_FAILED",
+        "LLM_API_ERROR",
+        "STORAGE_WRITE_FAILED"
       ],
       "must_exclude": []
     }

@@ -21,15 +21,32 @@
         "branches": { "type": "object" },
         "max_snapshot_bytes": { "type": "integer", "minimum": 1048576, "maximum": 268435456 },
         "max_message_bytes": { "type": "integer", "minimum": 1024, "maximum": 16777216 },
-        "max_messages_per_conversation": { "type": "integer", "minimum": 100, "maximum": 100000 }
+        "max_messages_per_conversation": { "type": "integer", "minimum": 100, "maximum": 100000 },
+        "extensions_root": { "type": "string", "minLength": 1, "description": "扩展安装根(目录发现);2026-09-11 补录,此前实现已支持但 schema 遗漏。" }
       },
       "additionalProperties": false,
       "description": "core 段严格校验: 未知键拒绝, 失败 = 启动失败。max_snapshot_bytes / max_message_bytes / max_messages_per_conversation 为 §15-A6 资源上限独立配置项(默认 = types 域 ResourceLimits 协议常量, 与 history_window_messages/max_loops 语义不同, 不得复用顶替)。"
+    },
+    "HostComponent": {
+      "type": "object",
+      "description": "宿主组件插槽装配项(P-5 条件④): 接管 storage/history 等宿主插槽的异语言 backend(经 kind: host-component 的 manifest 目录发现)。",
+      "properties": {
+        "slot": { "type": "string", "minLength": 1, "description": "∈ SLOTS 白名单(storage / history);重复接管 = 启动失败。" },
+        "backend": { "type": "string", "minLength": 1, "description": "∈ BACKENDS 注册表;未注册 = 启动失败。" },
+        "options": { "type": "object", "description": "backend 自解释;options.extension 与 options.command 二选一(同时给出 = 启动失败)。" }
+      },
+      "required": ["slot", "backend"],
+      "additionalProperties": false
     },
     "ConfigFile": {
       "type": "object",
       "properties": {
         "core": { "$ref": "#/definitions/CoreConfig" },
+        "host_components": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/HostComponent" },
+          "description": "宿主组件插槽装配(P-5);缺省省略 = 内置 SQLite 行为完全不变。"
+        },
         "storage": { "type": "object" },
         "server": { "type": "object" },
         "llm": { "type": "object" }

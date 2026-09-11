@@ -1,0 +1,33 @@
+{
+  "id": "host-component-slot-23",
+  "protocol_version": "v1.0.0",
+  "description": "P-5/P-6: host-component 经 manifest 目录发现(extensions_root + kind/slots)接管 storage+history 双插槽 —— 同一 backend 实例覆盖双槽(stdio-proxy),且分别满足 StorageProvider / HistoryStore / MessageStore 三个 core ABC(isinstance 快速失败不降级)。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "extension_name": "ref_storage",
+    "manifest_kind": "host-component",
+    "host_components": [
+      {
+        "slot": "storage",
+        "backend": "stdio-proxy",
+        "options": { "extension": "ref_storage", "args": ["--db", "@db"] }
+      }
+    ],
+    "db_placeholder": "@db"
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:host_component_result",
+        "payload": {
+          "ok": true,
+          "slots": ["history", "storage"],
+          "same_instance": true,
+          "storage_isinstance": true,
+          "history_isinstance": true
+        }
+      }
+    ],
+    "final": { "is_complete": true }
+  }
+}

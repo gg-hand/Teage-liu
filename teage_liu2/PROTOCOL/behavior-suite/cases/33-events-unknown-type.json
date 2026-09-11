@@ -1,0 +1,21 @@
+{
+  "id": "events-unknown-type-33",
+  "protocol_version": "v1.0.0",
+  "description": "events E-2(未知类型宽容): L3 旁路消费到未知 type 的事件时透传或记录,**绝不崩溃** —— 未知类型既不得抛异常,也不得阻断其后已知 L3 事件(tool_use)的投递。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "route_events": [
+      { "type": "custom:unknown_xyz", "session_id": "s-33", "foo": 1 },
+      { "type": "tool_use", "session_id": "s-33", "name": "echo", "input": {} },
+      { "type": "another_unknown_999", "session_id": "s-33" }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:events_result",
+        "payload": { "crashed": false, "known_l3_delivered": true }
+      }
+    ]
+  }
+}

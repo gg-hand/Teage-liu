@@ -1,0 +1,69 @@
+{
+  "id": "host-component-reject-24",
+  "protocol_version": "v1.0.0",
+  "description": "P-5/P-6 快速失败矩阵: 非法宿主组件配置一律**启动失败**(可读错误,不静默降级、不回落内置实现) —— 未知插槽 / 未知 backend / 插槽重复接管 / options.command 与 options.extension 同给 / 引用 kind:branch 扩展。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "rejects": [
+      {
+        "label": "unknown_slot",
+        "manifest_kind": "host-component",
+        "host_components": [{ "slot": "nope", "backend": "sqlite" }],
+        "expect_regex": "未知插槽"
+      },
+      {
+        "label": "unknown_backend",
+        "manifest_kind": "host-component",
+        "host_components": [{ "slot": "storage", "backend": "nope" }],
+        "expect_regex": "未知 backend"
+      },
+      {
+        "label": "duplicate_slot",
+        "manifest_kind": "host-component",
+        "host_components": [
+          { "slot": "storage", "backend": "sqlite" },
+          { "slot": "storage", "backend": "sqlite" }
+        ],
+        "expect_regex": "重复接管"
+      },
+      {
+        "label": "mutex_options",
+        "manifest_kind": "host-component",
+        "host_components": [
+          {
+            "slot": "storage",
+            "backend": "stdio-proxy",
+            "options": { "command": ["no-such-binary"], "extension": "ref_storage" }
+          }
+        ],
+        "expect_regex": "不可同时给出"
+      },
+      {
+        "label": "branch_not_host_component",
+        "manifest_kind": "branch",
+        "host_components": [
+          {
+            "slot": "storage",
+            "backend": "stdio-proxy",
+            "options": { "extension": "ref_storage" }
+          }
+        ],
+        "expect_regex": "不能作为宿主组件"
+      }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:host_component_reject",
+        "payload": {
+          "case_count": 5,
+          "rejected_count": 5,
+          "matched_count": 5,
+          "all_rejected": true
+        }
+      }
+    ],
+    "final": { "is_complete": true }
+  }
+}

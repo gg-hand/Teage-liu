@@ -57,7 +57,41 @@
 - **修复**:`core/pipeline.py` 拦截分支 ①response 改为"您的消息包含不允许的内容，已被安全策略拦截。请调整表述后再试。"(core 通用文案,不点名枝干,守依赖铁律);②先设 `error_message = "对话被安全策略拦截"` 再进 finally 的 on_error_all。
 - **验证**:行为套件 17/17;audit 语义可区分:拦截=round 0+拦截文案,中断=round≥1+兜底文案。
 
+### [已修复] `HOOK_TERMINAL_ACTION_IGNORED` 码在 observe 只读路径未发射（2026-09-11 M2/WP-B 用例 36 发现）
+
+- **现象**:声明 `observe` 的扩展返回 action 时,core 忽略并记录 error 级日志,但日志文本**不含 `HOOK_TERMINAL_ACTION_IGNORED` 码前缀** —— 与 events 域 E-9 条款明文("error 级日志,`HOOK_TERMINAL_ACTION_IGNORED`")不符,属契约-实现漂移(码在 errors.py 有常量、无发射点)。
+- **根因**:`core/hooks.py` `HookChain._log_observe_action` 的 `logger.error` 使用纯描述文案,未接码常量。
+- **修复**:补 `HOOK_TERMINAL_ACTION_IGNORED` 码前缀(与 `TOOL_*` 三码同形)。
+- **验证**:行为套件用例 `events-observe-readonly-36`(变异验证:去掉码前缀 → 用例红)。
+
+### [已修复] 部分层 `injection_budget` 覆盖触发 KeyError（2026-09-11 M2/WP-B 用例 38 发现）
+
+- **现象**:只给部分层配预算(如 `{"STABLE_SYSTEM": 8}`)时,收口阶段抛 `KeyError: 'SYSTEM'` —— "按层配置预算"实际不可用,必须五层全给。
+- **根因**:`core/injection.py` `assemble_injections` 用 `budgets = budgets or DEFAULT_LAYER_BUDGETS` 后直接索引 `budgets[L_*]`;部分层字典为真值,不会回退默认。
+- **修复**:改为 `{**DEFAULT_LAYER_BUDGETS, **(budgets or {})}`(部分层覆盖,未给出的层回退默认)。
+- **验证**:行为套件用例 `types-budget-drop-38`(变异验证:把"整段丢弃"退化为"截断" → 用例红)。
+
+### [已修复] P-4 参考后端嵌套事务使批量写原子性失效（2026-09-11 M2/WP-A 任务 A1 发现）
+
+- **现象**:参考后端 `log_messages` 声称单事务原子,实际**逐条提交** —— 批次中途失败时前面的元素残留(用例 26 的 `final_rows` 变 3)。
+- **根因**:辅助方法 `_insert_message` 内部自带 `with self.conn:`(更新 `sessions.updated_at`);Python sqlite3 的**内层 `with` 退出会提交外层未完成事务**,外层的事务边界被击穿。
+- **修复**:`_insert_message` 去掉内层 `with self.conn:`,插入 + updated_at 更新同由调用方(log_message / log_messages)的事务包裹。
+- **验证**:`tests_core/test_reference_backend.py`(中途失败回滚断言)+ 套件用例 `storage-batch-atomic-26`;变异验证:改回逐条提交 → 两处均红。
+
 ## 缺口清单
+
+### [P2] H-17"只读视图"无内核级强制（2026-09-11 M2/WP-B 用例 31 如实锚定）
+
+- **现象**:`Snapshot` 是 `@dataclass(frozen=True)`,但 `messages` / `extra` 是可变容器 —— 扩展原地 `snapshot.messages.append(...)` **会成功并污染 core 状态**(收口后进入 LLM 的消息序列含该篡改),H-17"快照对扩展呈现为不可变只读视图"目前只是**契约约定**,非内核强制。
+- **影响**:恶意/失误扩展可绕过 action 机制直接改对话状态;observe 只读(E-9)与 H-17 的强制力不对称(前者有码+忽略,后者无拦截)。
+- **现状锚定**:用例 `hooks-readonly-31` 如实断言"篡改生效"(`messages_roles=[user, assistant]`),**缺口修复后该用例必须收紧为 `[user]`** —— 用例变红即修复信号。
+- **修复方向(未做)**:装配/钩子调用前以只读代理或不可变容器(如 `tuple` + `MappingProxyType`)包装快照;或在 `apply_action_batch` 前校验快照未被外部改写。需评估性能(§18.2 零拷贝/结构共享约束)与兼容面(现有扩展是否依赖可变容器)。
+
+### [P3] H-9 语义级校验缺"可构造的负例路径"（2026-09-11 M2/WP-B 用例 29 发现）
+
+- **现象**:`validate_messages` 的语义级规则("角色必须交替")在**任何外部输入组合下都不可达** —— `merge_consecutive_user_messages` 在收口前已把相邻 user 合并,`AppendMessage` 又强制 `role=user`,故无法构造"进入 LLM 前的非法序列"。
+- **定性**:不是缺陷(不变量被更强的前置规则保证),但意味着**语义级校验分支无行为套件覆盖**(只能正向断言不变量成立,见用例 29)。
+- **处理**:用例 29 改为正向不变量断言(连续 user 追加 → 合并为单条)。若未来开放 `AppendMessage` 其他角色或新增 tool_result 配对规则(types.py 注释标注"M2 扩展"),须补对应负例。
 
 ### [P3] SessionStore 无 TTL / 无清理策略（契约而非缺口）
 

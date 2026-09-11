@@ -231,6 +231,11 @@ class MessageStore(abc.ABC):
 
     @abc.abstractmethod
     def get_session_messages(
-        self, session_id: str, limit: Optional[int] = None
+        self, session_id: str, limit: Optional[int] = None,
+        before_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """获取会话全部消息(按时间正序),含 content_blocks 等消息级字段。"""
+        """获取会话全部消息(按时间正序),含 content_blocks 等消息级字段。
+
+        ``before_id`` 为向上翻页游标:仅取 id < before_id 的更早消息
+        (与 ``HistoryStore`` / ``SQLiteHistoryStore`` 签名对齐;core/storage.py).
+        """

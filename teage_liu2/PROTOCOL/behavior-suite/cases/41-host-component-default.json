@@ -1,0 +1,22 @@
+{
+  "id": "host-component-default-41",
+  "protocol_version": "v1.0.0",
+  "description": "P-5 条件③: 缺省省略 host_components = 全部插槽用 core 默认实现 —— 装载器返回空映射(不接管、不报错、不静默替换)。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "mode": "default_path",
+    "manifest_kind": "host-component"
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:host_component_result",
+        "payload": {
+          "default_empty": true,
+          "slots": []
+        }
+      }
+    ],
+    "final": { "is_complete": true }
+  }
+}

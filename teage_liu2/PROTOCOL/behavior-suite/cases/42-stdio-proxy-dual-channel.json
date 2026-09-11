@@ -1,0 +1,38 @@
+{
+  "id": "stdio-proxy-dual-channel-42",
+  "protocol_version": "v1.0.0",
+  "description": "P-7 双档分级: background 档(log_message_buffered)入缓冲合帧经 log_messages 发送;flush 档(log_message)先冲刷缓冲再直发,保 FIFO 序;metrics 可区分两档(帧数 vs 直发次数)。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "session_id": "s-42",
+    "storage_ops": [
+      { "op": "ensure_session", "args": ["s-42"] },
+      { "op": "log_message_buffered",
+        "kwargs": { "session_id": "s-42", "role": "assistant", "content": "bg-1" } },
+      { "op": "log_message_buffered",
+        "kwargs": { "session_id": "s-42", "role": "assistant", "content": "bg-2" } },
+      { "op": "log_message",
+        "kwargs": { "session_id": "s-42", "role": "user", "content": "flush-1" } },
+      { "op": "get_session_messages", "args": ["s-42"],
+        "assert": [
+          { "content": "bg-1" },
+          { "content": "bg-2" },
+          { "content": "flush-1" }
+        ] }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:stdio_result",
+        "payload": {
+          "op_count": 5,
+          "message_count": 3,
+          "buffered_frames": { "range": [1, 3] },
+          "flush_direct_calls": 1
+        }
+      }
+    ],
+    "final": { "is_complete": true }
+  }
+}

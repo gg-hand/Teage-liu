@@ -5,6 +5,43 @@
 
 ---
 
+## 2026-09-11 「部分落实」项统一落地（协议债收口 + 测试锚定）
+
+> 来源：`docs/plans/2026-09-11-部分落实项统一落地审查.md`。**PROTOCOL v1.0.0 冻结面未动，不升 VERSION。** teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。
+
+- **套件 39 → 43**：新增 `host-component-disabled-40`（未声明不启用＝已装未启用统计）/ `host-component-default-41`（缺省省略 `host_components`＝全插槽用 core 默认实现）/ `stdio-proxy-dual-channel-42`（P-7 双档：background 合帧经 `log_messages`、flush 直发保 FIFO 序、`metrics_snapshot` 区分两档）/ `host-component-uninstalled-43`（声明未装＝启动失败）；`error-codes-20` 扩展 `llm_error` / `storage_write_fail` 两类场景。
+- **错误码全码锚定**：套件 `error_codes` 并集 8 → **12 码**；新增单测 `test_step_error_codes.py`（4 个 LLM_*）、`test_storage_error_codes.py`（STORAGE_WRITE_FAILED / STORAGE_READ_FAILED）、`test_config.py` 补 CONFIG_MISSING_KEY、`test_error_codes_schema.py`（ERROR_CODES ↔ errors.schema.json 机械比对）→ **并集 18/18 全码（脚本实测，缺失 0）**；P-8 条件②③勾稽为已满足。
+- **core/server 测试锚定（不引入 fastapi 依赖，CI 可跑）**：新增 `test_snapshot_identity.py`（T-3/T-5 结构共享 + 禁 deepcopy）、`test_assembler.py`、`test_modes.py`、`test_supervisor.py`（L-5/L-6 僵死重建）、`test_remote_adapter.py`（钩子往返 / `close()` 后可读错 / major 拒绝）、`test_server_host_components.py`（P-5 缺省路径 + 快速失败矩阵）、`test_server_stdio_proxy.py`（E3 + 双档）、`test_session_locks.py`（L-11）、`test_session_extra_continuity.py`（L-10）→ pytest 165 → **218 passed**。
+- **协议登记勘误与勾稽**：PENDING P-1/P-5/P-7 条件③由「部分满足」改为**已满足**（E-1..E-3 勘误：能力已在 core 实现、仅缺锚定）；P-8 四条条件全部满足；T-8 移出「未覆盖」清单（未覆盖 20 → 6 条）；协议收口计划顶部 checkbox 免责覆盖 M1+M2（0/77 未勾）。
+- **变异验证**：5 处退化（ERROR_CODES 去码 / STORAGE_WRITE_FAILED 去前缀 / `log_message` 免冲刷 / `disabled_installed` 恒空 / 缺省路径抛错）→ 单测 7 红 + 套件 3/3 红；恢复后全绿。
+- **验证**：行为套件 **43/43**；pytest **218 passed**；`scripts/audit_liu2.ps1` **exit=0**。
+
+## 2026-09-11 M2 行为套件场景与用例扩展（WP-A + WP-B，用例 21 → 39）
+
+> 来源：`docs/plans/2026-09-10-协议收口与遗留债-解决计划.md` 的 M2；执行编排与事实修正见 `docs/plans/2026-09-11-M2行为套件场景能力-执行计划.md`。teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。**PROTOCOL v1.0.0 冻结面（11 钩子 / 12 消息 / 6 Action）未变，不升 VERSION。**
+
+- **WP-A（场景与断言能力，5 任务全落地）**：
+  - **A1 P-4 参考后端** `tools/reference_storage_backend.py`：**不 import `teage_liu2.core`**，仅标准库 sqlite3 独立实现 P-4 全部语义条款（kind 白名单 / filters 先于 limit / 批量单事务 / write 恒返数组 / 子串搜索 / 三流 UTF-8 / bye 退出 / WAL + busy_timeout）。执行中发现并修复**参考后端自身的原子性缺陷**：`_insert_message` 内层 `with self.conn:` 会提交外层未完成事务（sqlite3 嵌套 with 语义），致 `log_messages` 变逐条提交 → 去掉内层 with。
+  - **A2 真实子进程 stdio 场景**（用例 22）：runner 首个依赖 `teage_liu2.server` 的分支；spawn 参考后端 → hello 握手 → 双通道读写 → UTF-8 往返 → bye。
+  - **A3 host-component 插槽场景**（用例 23/24）：manifest 临时目录 + `wire_extensions` + `load_host_components`，覆盖"同实例覆盖 storage+history 双插槽 + 三 ABC isinstance"与 5 条快速失败矩阵。**修正原计划偏差**：manifest `command` 无占位符机制 → 直接写绝对路径。
+  - **A4 断言能力**（用例 25）：新增 `expected.final.llm_assert`（4 子键，未识别子键显式失败）+ `inputs` 的 `storage_writer` / `session_store` / `core_overrides` / `mutate_snapshot`；`_assert_final` 增 `llm=None`（既有 2 处调用点零改动）。
+  - **A5 批量原子性**（用例 26）：参考后端把元素校验**移入事务内**（否则 JSON 用例无法区分原子/非原子实现），runner 支持 `expect_error` + `storage_ops[].assert` + `final_probe` 回读。
+- **WP-B（13 条黄金用例，编号 27–39）**：hooks 域 6 条（H-3 角色限制 / H-8 原子批次 / H-9 语义不变量 / H-16 inject_round 合并 / H-17 只读 / H-19 reject 事件完整）、events 域 4 条（E-2 未知类型宽容 / E-4 L2 唯一通道 / E-8 step_end 双呈现 / E-9 observe 只读）、types 域 2 条（T-1 预算整段丢弃 / T-7 doc 透明性）、config 域 1 条（C-2 敏感字段）。**13 条全部通过变异验证**。
+- **执行中新发现并修复的 core 缺口（3 项）**：①`HOOK_TERMINAL_ACTION_IGNORED` 在 observe 只读路径**未发射**（E-9 契约漂移，`core/hooks.py` 补码前缀）②部分层 `injection_budget` 覆盖触发 **KeyError**（`core/injection.py` 改为默认层合并）③（见 A1）参考后端嵌套事务。
+- **登记未修复缺口（2 项）**：H-17"只读视图"无内核级强制（`frozen` 只锁属性、`messages`/`extra` 容器仍可变，用例 31 如实锚定"篡改生效"，修复后须收紧断言）；H-9 语义级校验缺可构造负例路径（被 merge 前置保证，用例 29 改为正向不变量断言）。
+- **协议条件勾稽（B5）**：PENDING 六条协议的条件③ —— **P-2 / P-4 / P-6 已满足**，**P-1 / P-5 / P-7 部分满足**（缺口分别为"已装未启用统计"（属 M3/WP-E）、"缺省省略 = 内置 SQLite"（M3/WP-E）、"双档分级观测"（M3/WP-E））。
+- **验证**：行为套件 **39/39**；pytest **165 passed**（新增 6 条参考后端单测）；`scripts/audit_liu2.ps1` **exit=0**；每条新用例做变异验证（退化实现 → 变红 → 恢复）。
+
+## 2026-09-11 协议收口 M1（WP-C + WP-D + WP-G + 两处同源小修）
+
+> 来源：`docs/plans/2026-09-10-协议收口与遗留债-解决计划.md` 的里程碑 M1（另按 `docs/plans/2026-09-11-core与协议通用性局限-评估.md` §7 建议并入两处"契约信用"小修）。teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。**PROTOCOL v1.0.0 冻结面（11 钩子 / 12 消息 / 6 Action）未变，不升 VERSION。**
+
+- **WP-C（P-8 三码发射点）**：`TOOL_MODIFY_INVALID`（`core/hooks.py` —— pre_tool_call 返回 modify 但 `input=None`，此前**静默忽略、无 else 分支**）、`TOOL_EXEC_FAILED`（同文件 dispatch 异常日志）、`TOOL_REJECTED_BY_POLICY`（`core/loop.py` reject 路径）三码补 `CODE: ` 前缀；`errors.spec.md §5` 把三者从"⑤ 待落地"归入"② 日志面"，PENDING P-8 条件④勾稽为**已满足**。锚定 = 新增 `tests_core/test_tool_error_codes.py`（2 条）+ 套件用例 16 增 `error_codes.must_include`（**变异验证**：去前缀 → 两处均变红）。
+- **WP-D（协议域归档与契约同步）**：manifest 声明规范自 `SUBSYSTEM-SPI.md §13.2` 迁入 `PROTOCOL/lifecycle/lifecycle.spec.md §3` + 新增 `ExtensionManifest` schema（与 `extension_loader.parse_manifest` 逐条对应，含 language/kind 条件必填 if-then）；`host_components` 契约入 `config.spec.md §3` + 新增 `HostComponent` schema，并补录 schema 遗漏的 `extensions_root`；PENDING P-1 登记三个资源上限键 + 条件④勾稽；`MessageStore.get_session_messages` ABC 补 `before_id`（`core/storage.py`，与 HistoryStore/SQLiteHistoryStore 对齐，零行为变化）。
+- **WP-G（文档一致性）**：`types` / `transport` 两域 `T-*` 编号歧义消解（各加域内限定 + README 新增"条款编号约定"，**既有编号不变**）；用例 17 description 删去未实现的"防重入/并发上限"表述；`teage_liu2/docs/INTERFACES.md` 任务章节修正两处漂移。
+- **同源小修（契约信用）**：①`InProcessHostPort.register_task/cancel_task` 由**同步**改 `async` + `await` + 错误上抛（`core/transport.py`）—— 修复"调用 async `bus.handle` 未 await → 协程被丢弃、`task_register`/`task_cancel` 永不执行（+ RuntimeWarning）"的真实缺陷；②`INTERFACES.md` 关于"热重载重建 cancel_all 兜底"的表述与 `registry.rebuild`（**不调** cancel_all）对齐 —— 明确扩展必须在 teardown 自清理。两处均补锚定测试（`tests_core/test_host_port_tasks.py` 3 条，含"无未 await 协程"断言）。
+- **验证**：行为套件 **21/21**；pytest **156 passed**（新增 5 条）；`scripts/audit_liu2.ps1` **exit=0**。
+
 ## 2026-09-10 core 性能与健壮性完善（7 任务落地，零契约变更）
 
 > 来源：`docs/plans/2026-09-10-liu2-core性能审查报告.md`（本机实测口径）；执行计划：`docs/plans/2026-09-10-core性能与健壮性完善-执行计划.md`。teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。**PROTOCOL/ v1.0.0 冻结面一字未动**，不改配置键、不新增依赖。

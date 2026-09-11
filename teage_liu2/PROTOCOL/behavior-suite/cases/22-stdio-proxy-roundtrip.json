@@ -1,0 +1,31 @@
+{
+  "id": "stdio-proxy-roundtrip-22",
+  "protocol_version": "v1.0.0",
+  "description": "P-4 条款①③④⑥⑦⑧: 真实子进程 stdio 后端 spawn→hello 握手→双通道(docs + messages)读写→UTF-8 往返→bye 全链,被测进程 = 参考后端(tools/reference_storage_backend.py,独立于 teage_liu2.core 的第二个 P-4 实现)。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "session_id": "s-22",
+    "storage_ops": [
+      { "op": "ensure_session", "args": ["s-22"] },
+      { "op": "log_message", "kwargs": { "session_id": "s-22", "role": "user", "content": "你好" } },
+      { "op": "get_session_messages", "args": ["s-22"], "assert": { "length": 1 } },
+      { "op": "write", "args": ["t22.docs", [{ "a": 1 }, { "a": 2 }]], "assert": { "length": 2 } },
+      { "op": "query", "args": ["t22.docs"], "assert": { "length": 2 } }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:stdio_result",
+        "payload": {
+          "handshake_ok": true,
+          "op_count": 5,
+          "child_pid_gt_0": true,
+          "message_count": 1,
+          "utf8_roundtrip": true
+        }
+      }
+    ],
+    "final": { "is_complete": true }
+  }
+}

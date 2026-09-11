@@ -1,0 +1,35 @@
+{
+  "id": "hooks-semantic-validate-29",
+  "protocol_version": "v1.0.0",
+  "description": "hooks H-9/H-13/H-15(语义级不变量): 扩展连续声明多条 user 追加后,收口阶段的 merge 相邻 user + 语义级校验保证任何进入 LLM 的消息序列角色仍严格交替 —— 本用例断言 llm_assert.messages_roles 为单条 user(三条 user 被合并),证明不变量成立而非被绕过。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-29",
+    "user_input": "hi",
+    "ext_a_actions": [
+      { "op": "AppendMessage", "message": { "role": "user", "content": "追加1" } },
+      { "op": "AppendMessage", "message": { "role": "user", "content": "追加2" } }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      { "type": "step_start" },
+      { "type": "done", "payload": { "termination_reason": "normal" } }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "llm_assert": { "messages_roles": ["user"] }
+    }
+  }
+}

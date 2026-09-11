@@ -25,6 +25,7 @@ from .errors import (
     TERMINATION_NO_TOOL_EXECUTOR,
     TERMINATION_USER_CANCEL,
     TOOL_NO_EXECUTOR,
+    TOOL_REJECTED_BY_POLICY,
 )
 from .hooks import HookChain, no_executor
 from .llm import LLMClient
@@ -214,9 +215,10 @@ class ReactLoop:
 
                 if decision.is_reject:
                     # 有执行者但被策略拒绝 → tool_rejected(§8)
+                    # P-8 ⑤(2026-09-11 WP-C):补 CODE: 前缀(§errors §5 日志面)
                     logger.warning(
-                        "工具 %s 被策略拒绝(pre_tool_call),tool_rejected 回喂",
-                        tool_name,
+                        "%s: 工具 %s 被策略拒绝(pre_tool_call),tool_rejected 回喂",
+                        TOOL_REJECTED_BY_POLICY, tool_name,
                     )
                     yield {
                         "type": EV_TOOL_RESULT,

@@ -1,7 +1,7 @@
 {
   "id": "host-port-inprocess-17",
   "protocol_version": "v1.0.0",
-  "description": "同语言 host_port 进程内消息通道(§18.2/§transport.1): 同语言扩展经注入的 host_port(InProcessHostPort)走 storage_write/read/query/delete + invoke_llm + task_register/cancel 消息语义 —— 前缀隔离(§15-A3)、capability 授权(§15-A4)、防重入(§15-A5)、并发上限(§15-A6)全生效; 非对象引用注入(零拷贝引用仅限快照/值对象)。",
+  "description": "同语言 host_port 进程内消息通道(§18.2/§transport.1): 同语言扩展经注入的 host_port(InProcessHostPort)走 storage_write/read/query/delete + invoke_llm + task_register/cancel 消息语义 —— 本用例断言跨前缀拒绝(§15-A3 前缀隔离)与声明 llm 后 invoke_llm 成功(§15-A4 授权面)、task_* 登记/注销生效; 非对象引用注入(零拷贝引用仅限快照/值对象)。注: 防重入(§15-A5)与 invoke_llm 并发上限(§15-A6)不在本用例断言范围(无对应 observed 键,由 tests_core 单测锚定)。",
   "setup": {
     "extensions": [
       {

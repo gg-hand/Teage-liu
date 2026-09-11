@@ -66,6 +66,16 @@
         "persisted": {
           "type": ["object", "null"],
           "description": "落盘断言(如消息已写入历史库)。"
+        },
+        "llm_assert": {
+          "type": ["object", "null"],
+          "description": "末次 LLM 调用入参断言(WP-A A4 新增)。子键白名单 = system_contains / system_regex / messages_roles / message_count;未识别子键由 runner 显式失败(本 schema additionalProperties:true,真正拦截者是 runner 的 _LLM_ASSERT_KEYS)。",
+          "properties": {
+            "system_contains": { "type": "string" },
+            "system_regex": { "type": "string" },
+            "messages_roles": { "type": "array", "items": { "type": "string" } },
+            "message_count": { "type": "integer" }
+          }
         }
       },
       "additionalProperties": true

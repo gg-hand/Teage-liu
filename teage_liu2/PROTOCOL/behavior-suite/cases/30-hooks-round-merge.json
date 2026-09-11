@@ -1,0 +1,47 @@
+{
+  "id": "hooks-round-merge-30",
+  "protocol_version": "v1.0.0",
+  "description": "hooks H-16(inject_round 多声明合并): ext_a(注册在前)与 ext_b(注册在后)各声明一条同 key 的 build_injections(STABLE_SYSTEM 层)与一条同 key 的 inject_round(BEFORE_INPUT 层) —— 同层同 key 后注册覆盖先注册(b 胜出、a 的内容不出现),且两扩展的 inject_round 钩子都被调用。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["build_injections", "inject_round"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_b",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["build_injections", "inject_round"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-30",
+    "user_input": "hi",
+    "ext_a_injections": [{ "layer": "STABLE_SYSTEM", "content": "BUILD-AAA", "key": "round.dup" }],
+    "ext_b_injections": [{ "layer": "STABLE_SYSTEM", "content": "BUILD-BBB", "key": "round.dup" }],
+    "ext_a_inject_round": [{ "layer": "BEFORE_INPUT", "content": "ROUND-AAA", "key": "round.dup" }],
+    "ext_b_inject_round": [{ "layer": "BEFORE_INPUT", "content": "ROUND-BBB", "key": "round.dup" }]
+  },
+  "expected": {
+    "invocations": [
+      { "hook": "inject_round", "extension": "ext_a" },
+      { "hook": "inject_round", "extension": "ext_b" }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "llm_assert": {
+        "system_contains": "BUILD-BBB",
+        "system_regex": "(?s)^(?!.*BUILD-AAA)",
+        "messages_roles": ["user"]
+      }
+    }
+  }
+}

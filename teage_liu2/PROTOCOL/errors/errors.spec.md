@@ -64,17 +64,17 @@
 | 面 | 位置 | 覆盖码 |
 |---|---|---|
 | ① 事件面 | `error` 事件的 `code` 字段（`events` 域已允许 `code?`） | LLM_TIMEOUT / LLM_CANCELED / LLM_STREAM_FAILED / LLM_API_ERROR / HOOK_INVALID_ACTION |
-| ② 日志面 | 日志文本 `CODE: message` 前缀 | LOOP_MAX_REACHED / HOOK_TIMEOUT / HOOK_EXCEPTION / HOOK_TERMINAL_ACTION_IGNORED / TOOL_NO_EXECUTOR / STORAGE_WRITE_FAILED / STORAGE_READ_FAILED |
+| ② 日志面 | 日志文本 `CODE: message` 前缀 | LOOP_MAX_REACHED / HOOK_TIMEOUT / HOOK_EXCEPTION / HOOK_TERMINAL_ACTION_IGNORED / TOOL_NO_EXECUTOR / **TOOL_EXEC_FAILED / TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID** / STORAGE_WRITE_FAILED / STORAGE_READ_FAILED |
 | ③ 响应面 | transport `{error:{code,message}}`（小写子命名空间，见 §5.1） | 见 §5.1（共 10 码） |
 | ④ 异常/启动失败面 | 抛错的 `ValueError` 消息 `CODE: message` 前缀（启动失败 = 可读错误） | CONFIG_UNKNOWN_KEY / CONFIG_INVALID_VALUE / CONFIG_MISSING_KEY |
-| ⑤ **待落地**（暂以 `tool_result is_error` 回喂承载，尚无日志/事件发射点） | — | TOOL_EXEC_FAILED / TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID |
+| ⑤ 工具类日志面（**2026-09-11 WP-C 落地**） | 发射点：`core/hooks.py`（TOOL_MODIFY_INVALID / TOOL_EXEC_FAILED）、`core/loop.py`（TOOL_REJECTED_BY_POLICY），均已补 `CODE: ` 前缀（归入 ②） | TOOL_EXEC_FAILED / TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID |
 
 **行为条款 R-2（可观测性）**: 新增错误码必须同时声明其可观测面并落地发射点。**当前锚定状态（2026-09-10）**：
 - 事件面（①）由 `tests_core/test_error_codes_events.py` 锚定（LLM_API_ERROR 事件 + 错误事件 `code ∈ ERROR_CODES`）；
-- 日志面（②）由行为套件用例 `error-codes-20`（logging 捕获 4 码）+ `hook-isolation-19`（HOOK_EXCEPTION）锚定；
+- 日志面（②）由行为套件用例 `error-codes-20`（logging 捕获 4 码）+ `hook-isolation-19`（HOOK_EXCEPTION）锚定；**工具类三码（2026-09-11 WP-C 落地）** 由 `tests_core/test_tool_error_codes.py`（TOOL_MODIFY_INVALID / TOOL_EXEC_FAILED，含变异验证）+ 套件用例 `error-responsibility-16`（TOOL_REJECTED_BY_POLICY）锚定；
 - 异常面（④）由用例 `config-domain-21` 锚定（码出现在抛错消息中）；
 - 响应面（③）由用例 06/11/12/17 以精确布尔断言锚定其**拒绝结果**（不校验码字符串本身）；
-- ⑤ 三码尚未落地，已登记于 PENDING P-8 入协议条件 ④。
+- ⑤ 三码**已落地**（2026-09-11 WP-C：`core/hooks.py` 与 `core/loop.py` 补 `CODE: ` 前缀），可观测面归入 ②。
 
 ### 5.1 transport 消息级错误码（③ 响应面子命名空间）
 

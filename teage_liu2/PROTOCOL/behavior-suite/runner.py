@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
+import gc
 import json
 import logging
 import os
@@ -30,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # 仓库根(teage_liu2/ 的父目录):使 teage_liu2.* 可 import
@@ -42,6 +45,7 @@ from teage_liu2.core.errors import ERROR_CODES  # noqa: E402
 from teage_liu2.core.event_stream import L3BatchSink  # noqa: E402
 from teage_liu2.core.hooks import Branch, HookChain  # noqa: E402
 from teage_liu2.core.injection import Injection  # noqa: E402
+from teage_liu2.core.modes import MODE_LOOP  # noqa: E402
 from teage_liu2.core.pipeline import ChatPipeline  # noqa: E402
 from teage_liu2.core.registry import BranchRegistry  # noqa: E402
 from teage_liu2.core.storage import SQLiteStorageProvider  # noqa: E402
@@ -61,6 +65,8 @@ from teage_liu2.core.types import (  # noqa: E402
     EV_TOOL_USE,
 )
 from teage_liu2.tests_core.fake_llm import FakeLLMClient  # noqa: E402
+
+import yaml
 
 try:  # jsonschema 已在 requirements.txt:13 声明;缺失时降级(仅跳过用例结构校验)
     import jsonschema
@@ -123,7 +129,9 @@ def _snapshot_fields(snapshot: Any) -> Dict[str, Any]:
 _SUPPORTED_TOP_KEYS = {
     "event_stream": None, "invocations": None, "final": None, "error_codes": None,
 }
-_SUPPORTED_FINAL_KEYS = {"termination_reason", "is_complete", "persisted"}
+_SUPPORTED_FINAL_KEYS = {"termination_reason", "is_complete", "persisted", "llm_assert"}
+#: llm_assert 子键白名单 —— 未识别子键**显式失败**(同 _check_supported 纪律,防"假绿")
+_LLM_ASSERT_KEYS = {"system_contains", "system_regex", "messages_roles", "message_count"}
 _SUPPORTED_INVOCATION_KEYS = {
     "hook", "extension", "order", "absent", "snapshot_assert", "actions_assert",
     "isolation",
@@ -349,8 +357,34 @@ class ScriptedBranch(Branch):
         items = self._behaviors.get("round_injections") or []
         return items[0] if items else None
 
+    def _maybe_mutate_snapshot(self, snapshot: Any) -> bool:
+        """H-17/T-3 只读验证:`inputs.mutate_snapshot` 为真时尝试**原地**改写快照。
+
+        Snapshot 是 frozen dataclass,但 ``messages`` / ``extra`` 是可变容器 ——
+        属性重绑定会抛 FrozenInstanceError,而容器原地变更**会成功**。本行为
+        用于检验"扩展篡改快照后 core 状态是否受影响"。返回是否有任一处改写成功。
+        """
+        if not self._behaviors.get("mutate_snapshot"):
+            return False
+        mutated = False
+        try:
+            # 追加 assistant(而非 user):user 会被收口 merge 吸收,无法从 LLM 入参区分;
+            # assistant 追加在"无只读保护"时会让 llm_assert.messages_roles 多出一项 ——
+            # 这正是用例 31 用来区分"有保护/无保护"的承重点。
+            snapshot.messages.append({"role": "assistant", "content": "注入篡改"})
+            mutated = True
+        except Exception:  # noqa: BLE001 - frozen/只读视图均视为"被拒绝"
+            pass
+        try:
+            snapshot.extra["hacked"] = True
+            mutated = True
+        except Exception:  # noqa: BLE001
+            pass
+        return mutated
+
     async def before(self, snapshot: Any) -> List[Any]:
         self._maybe_raise("before")
+        self._maybe_mutate_snapshot(snapshot)
         actions = self._actions("before_actions")
         self._record("before", snapshot, actions=actions)
         return actions
@@ -440,6 +474,10 @@ def _build_behaviors(name: str, inputs: Dict[str, Any], decl: Dict[str, Any]) ->
         b["raise_on"] = {
             h: RuntimeError(f"脚本化异常:{h}") for h in raise_on
         }
+    # H-17/T-3 只读验证(WP-A A4):inputs.mutate_snapshot = true → 脚本扩展在 before 内
+    # 尝试**原地**篡改快照(messages.append / extra 写),用于检验 core 状态是否被污染
+    if inputs.get("mutate_snapshot"):
+        b["mutate_snapshot"] = True
     return b
 
 
@@ -532,7 +570,8 @@ def _assert_invocations(expected_invocations: List[Dict[str, Any]],
 
 def _assert_final(expected_final: Dict[str, Any], done_event: Optional[Dict[str, Any]],
                   error_events: List[Dict[str, Any]],
-                  persisted_view: Optional[Dict[str, Any]] = None) -> List[str]:
+                  persisted_view: Optional[Dict[str, Any]] = None,
+                  llm: Any = None) -> List[str]:
     errors: List[str] = []
     if not expected_final:
         return errors
@@ -556,6 +595,28 @@ def _assert_final(expected_final: Dict[str, Any], done_event: Optional[Dict[str,
             errors.append(
                 f"persisted 不匹配: expect={expected_final['persisted']} actual={persisted_view}"
             )
+    spec = expected_final.get("llm_assert")
+    if spec:
+        # 事实源 = FakeLLMClient.last_system / last_messages(末次 LLM 调用的入参快照)
+        unknown = sorted(set(spec) - _LLM_ASSERT_KEYS)
+        if unknown:
+            errors.append(f"llm_assert 含未识别子键: {unknown}(支持: {sorted(_LLM_ASSERT_KEYS)})")
+            return errors
+        if llm is None:
+            errors.append("llm_assert 出现在无 LLM 观测的用例类型中(该类型不支持)")
+            return errors
+        system = getattr(llm, "last_system", None) or ""
+        messages = getattr(llm, "last_messages", None) or []
+        if spec.get("system_contains") and spec["system_contains"] not in system:
+            errors.append(f"llm system 未包含 {spec['system_contains']!r}: {system!r}")
+        if spec.get("system_regex") and not re.search(spec["system_regex"], system):
+            errors.append(f"llm system 不匹配正则 {spec['system_regex']!r}: {system!r}")
+        if spec.get("message_count") is not None and len(messages) != spec["message_count"]:
+            errors.append(f"llm message_count 不匹配: expect={spec['message_count']} actual={len(messages)}")
+        if spec.get("messages_roles") is not None:
+            roles = [m.get("role") for m in messages]
+            if roles != spec["messages_roles"]:
+                errors.append(f"llm messages_roles 不匹配: expect={spec['messages_roles']} actual={roles}")
     return errors
 
 
@@ -649,12 +710,29 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool,
 
     # FakeLLM 脚本:按 inputs 构造
     llm = _build_fake_llm(inputs)
+    # 可选注入:storage_writer(落盘链路断言) / session_store(会话态 L-10) / core_overrides。
+    # core_overrides **仅**覆盖 ChatPipeline 构造参数 —— 资源上限 max_* 是
+    # core/snapshot.py 的模块常量 RESOURCE_LIMITS(config 键未接线),不在可覆盖范围。
+    overrides = inputs.get("core_overrides") or {}
+    writer = None
+    if inputs.get("storage_writer"):
+        from teage_liu2.core.storage_writer import StorageWriter
+        writer = StorageWriter()
+    session_store = None
+    if inputs.get("session_store"):
+        from teage_liu2.core.session import SessionStore
+        session_store = SessionStore()
     pipeline = ChatPipeline(
         llm_client=llm,
         history_store=storage,
         hooks=hooks,
-        max_loops=int(inputs.get("max_loops", 50) or 50),
-        storage_writer=None,
+        max_loops=int(overrides.get("max_loops", inputs.get("max_loops", 50)) or 50),
+        mode=overrides.get("mode", MODE_LOOP),
+        injection_budget=overrides.get("injection_budget"),
+        history_window_messages=overrides.get(
+            "history_window_messages", inputs.get("history_window_messages", 100)),
+        storage_writer=writer,
+        session_store=session_store,
     )
     # L3 拦截点接线
     from teage_liu2.core.event_stream import EventStream
@@ -675,6 +753,8 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool,
         ):
             events.append(ev)
     except Exception as e:  # noqa: BLE001 - runner 断言层
+        if writer is not None:
+            writer.close()
         return _CaseResult(case_id, False, f"pipeline 异常: {e}")
 
     # 收集 L3 观测(等待批处理冲刷)
@@ -683,6 +763,26 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool,
     errors: List[str] = []
     errors += _check_supported(expected)
     errors += _check_min_assertions(expected)
+    # L3 观测结果暴露(events 域 E-4/E-7/E-8 断言用):把各 observe 扩展收到的事件
+    # 类型汇总成一个 custom:pipeline_l3_result 事件,供 expected.event_stream 断言
+    if l3_received:
+        delivered = {ext: [e.get("type") for e in evs] for ext, evs in l3_received.items()}
+        events.append({
+            "type": "custom:pipeline_l3_result",
+            "payload": {
+                "extensions": sorted(delivered),
+                "delivered": delivered,
+                "type_counts": {
+                    ext: {t: types.count(t) for t in sorted(set(types))}
+                    for ext, types in delivered.items()
+                },
+                "l1_leaked": any(
+                    t in ("text_delta", "reasoning_delta")
+                    for types in delivered.values() for t in types
+                ),
+            },
+        })
+
     if case_id.startswith("l1-invariant"):
         # L1 不变量:event_stream 的 absent 项(text_delta/reasoning_delta)对 L3 投递流断言;
         # done 项对外壳事件流断言(§3.2 三层事件流)
@@ -707,7 +807,7 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool,
     error_events = [e for e in events if e.get("type") == EV_ERROR]
     errors += _assert_final(
         expected.get("final") or {}, done_event, error_events,
-        _persisted_view(storage.records),
+        _persisted_view(storage.records), llm=llm,
     )
     errors += _assert_error_codes(
         expected.get("error_codes") or {},
@@ -715,6 +815,8 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool,
         capture_codes or [],
     )
 
+    if writer is not None:
+        writer.close()  # 同步方法(不可 await):排空在途写,落盘序断言才成立
     storage.close()
     return _CaseResult(case_id, not errors, "; ".join(errors))
 
@@ -1023,6 +1125,17 @@ async def _run_protocol_case(case: Dict[str, Any], verbose: bool,
     elif case_id.startswith("config-domain"):
         errors += await _run_config_case(case, custom_events)
 
+    elif case_id.startswith(("stdio-proxy", "storage-batch-atomic", "types-doc-opaque")):
+        # 三者共用同一分支:22 走全链往返,26 走批量原子性(expect_error + final_probe),
+        # 37 走 doc 透明性(nested 结构往返)—— 同 `_run_stdio_case`,由 inputs 驱动差异
+        errors += await _run_stdio_case(case, custom_events)
+
+    elif case_id.startswith("host-component"):
+        errors += await _run_host_component_case(case, custom_events)
+
+    elif case_id.startswith("events-"):
+        errors += await _run_events_case(case, custom_events)
+
     else:
         errors.append(f"未知用例类型: {case_id}")
 
@@ -1187,6 +1300,42 @@ async def _run_error_matrix(case: Dict[str, Any]) -> List[str]:
     return errors
 
 
+class _RaisingLLM:
+    """错误码矩阵:``chat_main_stream`` 抛指定异常(驱动 LLM_* 日志面)。"""
+
+    activity_timeout = 60.0
+    stream_total_timeout = 300.0
+
+    def __init__(self, exc_factory: Any) -> None:
+        self._exc_factory = exc_factory
+
+    async def chat_main_stream(self, *args: Any, **kwargs: Any):
+        raise self._exc_factory()
+        yield  # pragma: no cover
+
+    def close(self) -> None:
+        pass
+
+
+class _FaultHistoryStore:
+    """错误码矩阵:落盘必失败(驱动 STORAGE_WRITE_FAILED 日志面)。"""
+
+    def ensure_session(self, session_id: str):
+        return None
+
+    def get_session_messages(self, session_id: str, limit=None, before_id=None):
+        return []
+
+    def log_message(self, *args: Any, **kwargs: Any):
+        raise RuntimeError("矩阵:落盘故障")
+
+    def log_message_buffered(self, *args: Any, **kwargs: Any):
+        raise RuntimeError("矩阵:落盘故障")
+
+    def close(self):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # 20 错误码矩阵 / 21 config 域
 # ---------------------------------------------------------------------------
@@ -1244,6 +1393,29 @@ async def _run_error_code_matrix(case: Dict[str, Any]) -> List[str]:
                     {"tool_result": "executed"}, [],
                 ))
                 await _drive(chain, _ForeverToolLLM("t", {}), "s-20-loopmax")
+            elif kind == "llm_error":  # LLM_TIMEOUT / LLM_STREAM_FAILED / LLM_API_ERROR(日志面)
+                from teage_liu2.core.llm import ActivityTimeout, StreamCancelled
+
+                code = sc.get("code")
+                exc_map = {
+                    "LLM_TIMEOUT": lambda: ActivityTimeout("矩阵:空闲超时"),
+                    "LLM_CANCELED": lambda: StreamCancelled(),
+                    "LLM_STREAM_FAILED": lambda: asyncio.TimeoutError(),
+                    "LLM_API_ERROR": lambda: RuntimeError("矩阵:API 故障"),
+                }
+                if code not in exc_map:
+                    errors.append(f"未知 LLM 错误码: {code!r}")
+                else:
+                    await _drive(HookChain(), _RaisingLLM(exc_map[code]),
+                                 f"s-20-{str(code).lower()}")
+            elif kind == "storage_write_fail":  # STORAGE_WRITE_FAILED(日志面)
+                pipeline = ChatPipeline(
+                    llm_client=_build_fake_llm({"llm_text_deltas": ["ok"]}),
+                    history_store=_FaultHistoryStore(),
+                    hooks=HookChain(),
+                )
+                async for _ in pipeline.chat_stream("s-20-storefail", "错误码矩阵"):
+                    pass
             else:
                 errors.append(f"未知错误码场景: {kind!r}")
         except Exception as e:  # noqa: BLE001 - 矩阵驱动,异常计入用例结果
@@ -1294,9 +1466,398 @@ async def _run_config_case(case: Dict[str, Any],
             "observed_codes": list(dict.fromkeys(observed)),
         },
     })
+
+    # C-2 敏感字段(WP-B 用例 39):${VAR} 占位注入 + 脱敏 —— 密钥明文不得出现在错误消息
+    env_spec = inputs.get("env") or {}
+    yaml_text = inputs.get("yaml")
+    if yaml_text is not None or env_spec:
+        import os as _os
+
+        from teage_liu2.core.config import (
+            _resolve_value,
+            is_masked_value,
+            mask_sensitive_config,
+        )
+
+        saved_env = {k: _os.environ.get(k) for k in env_spec}
+        _os.environ.update({k: str(v) for k, v in env_spec.items()})
+        try:
+            resolved = _resolve_value(yaml.safe_load(yaml_text) or {}) if yaml_text else {}
+            field_path = (inputs.get("probe") or {}).get("field", "")
+            value: Any = resolved
+            for part in (field_path.split(".") if field_path else []):
+                value = value.get(part) if isinstance(value, dict) else None
+            # 触发一个可读错误,断言其中不含任何密钥明文
+            error_text = ""
+            try:
+                core_config_from({"core": {"no_such_key": 1}})
+            except ValueError as e:
+                error_text = str(e)
+            secrets = [str(v) for v in env_spec.values()]
+            masked_view = mask_sensitive_config(
+                {"llm": {"main_api_key": value}} if field_path else {}
+            )
+            custom_events.append({
+                "type": "custom:config_secret_result",
+                "payload": {
+                    "placeholder_resolved": bool(value) and "${" not in str(value),
+                    "secret_not_in_errors": all(s not in error_text for s in secrets),
+                    "masked_hides_secret": is_masked_value(
+                        (((masked_view or {}).get("llm") or {}).get("main_api_key"))
+                    ),
+                },
+            })
+        finally:
+            for key, old in saved_env.items():
+                if old is None:
+                    _os.environ.pop(key, None)
+                else:
+                    _os.environ[key] = old
     errors += _assert_event_stream(
         (case.get("expected") or {}).get("event_stream") or [], custom_events
     )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# 22 真实子进程 stdio 场景(WP-A 任务 A2;被测进程 = P-4 参考后端)
+# ---------------------------------------------------------------------------
+async def _run_stdio_case(case: Dict[str, Any],
+                          custom_events: List[Dict[str, Any]]) -> List[str]:
+    """spawn 参考后端 → hello 握手 → 逐 op 调用 → bye 关闭。
+
+    runner 此处**首次依赖宿主实现**(``teage_liu2.server.storage_stdio_proxy``)——
+    定位见 ``PROTOCOL/README.md``「依赖边界」段;观测结果统一经
+    ``custom:stdio_result`` 事件交给 ``expected.event_stream`` 断言。
+
+    返回 errors 列表(与 ``_run_config_case`` 同契约)。
+    """
+    from teage_liu2.server.storage_stdio_proxy import StdioStorageProxy
+
+    errors: List[str] = []
+    inputs = case.get("inputs") or {}
+    expected = case.get("expected") or {}
+    backend = Path(__file__).resolve().parent / "tools" / "reference_storage_backend.py"
+    results: List[Dict[str, Any]] = []
+    pid = 0
+    # 默认 False:只有真正观察到"中文原样读回"才置 True(否则无 op 时该断言恒真、不承重)
+    utf8_ok = False
+    # 批量原子性(A5):被拒的具体原因 + 探针回读条数(默认 0,只有真探测才赋值)
+    rejected_non_dict = False
+    final_rows = 0
+
+    with tempfile.TemporaryDirectory(prefix="bs_stdio_") as td:
+        proxy = StdioStorageProxy(
+            command=[sys.executable, str(backend), "--db", str(Path(td) / "ref.db")],
+            request_timeout=10.0,
+        )
+        proxy.start()  # 握手失败/主版本不符 → 抛(start 非幂等,只调一次)
+        try:
+            # 子进程句柄在 _conn._proc(没有 proxy._proc)
+            proc = getattr(getattr(proxy, "_conn", None), "_proc", None)
+            pid = int(getattr(proc, "pid", 0) or 0)
+            for spec in inputs.get("storage_ops") or []:
+                op_name = spec["op"]
+                fn = getattr(proxy, op_name)
+                try:
+                    value = fn(*spec.get("args") or [], **(spec.get("kwargs") or {}))
+                except Exception as e:  # noqa: BLE001 - expect_error 场景依赖之
+                    if spec.get("expect_error"):
+                        # 承重判据:拒绝原因必须是"元素非对象"(非"任意异常都算过")
+                        rejected_non_dict = rejected_non_dict or ("必须是对象" in str(e))
+                        results.append({"op": op_name, "error": str(e)})
+                        continue
+                    errors.append(f"op {op_name} 意外失败: {type(e).__name__}: {e}")
+                    continue
+                if spec.get("expect_error"):
+                    errors.append(f"op {op_name} 期望报错但成功返回")
+                want = spec.get("assert")
+                if want is not None and not match_value(want, value):
+                    errors.append(f"op {op_name} 断言失败: expect={want} actual={value!r}")
+                if op_name == "get_session_messages":
+                    utf8_ok = any(m.get("content") == "你好" for m in (value or []))
+                results.append({"op": op_name, "value": value})
+            # 收尾探针(A5):回读目标 kind 的实际条数,证明"批次失败后无残留"
+            probe = inputs.get("final_probe")
+            if probe:
+                probed = getattr(proxy, probe["op"])(*(probe.get("args") or []))
+                final_rows = len(probed or [])
+        finally:
+            proxy.close()
+        # P-7 双档口径(2026-09-11 落地审查):background 档经 log_messages(帧)发送、
+        # flush 档才计 log_message —— metrics 为本地快照,close 后仍可读
+        metrics = proxy.metrics_snapshot()
+
+    custom_events.append({
+        "type": "custom:stdio_result",
+        "payload": {
+            "handshake_ok": True,
+            "op_count": len(results),
+            "child_pid_gt_0": pid > 0,
+            "message_count": sum(
+                len(e.get("value") or [])
+                for e in results
+                if e["op"] == "get_session_messages"
+            ),
+            "utf8_roundtrip": utf8_ok,
+            "rejected_non_dict": rejected_non_dict,
+            "final_rows": final_rows,
+            "buffered_frames": int(metrics.get("log_messages", {}).get("count", 0)),
+            "flush_direct_calls": int(metrics.get("log_message", {}).get("count", 0)),
+        },
+    })
+    errors += _assert_event_stream(expected.get("event_stream") or [], custom_events)
+    errors += _assert_final(
+        expected.get("final") or {},
+        {"type": EV_DONE, "is_complete": True},   # 协议层无真实 done:按 storage 分支范式合成
+        [],
+        None,
+    )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# 23/24 host-component 插槽场景(WP-A 任务 A3;P-5 插槽契约 + P-6 目录发现)
+# ---------------------------------------------------------------------------
+def _hc_materialize_extensions_root(td: str, manifest_kind: str, backend: Path) -> str:
+    """在临时目录写 `extensions_root/ref_storage/manifest.yaml`(P-6 目录发现形态)。
+
+    manifest_kind = "host-component"(默认)或 "branch"(用于"引用非宿主组件"负例);
+    命令**直接写绝对路径**——manifest 无占位符/模板机制(`resolve_command` 只做
+    "路径在扩展目录内且存在 → 绝对化"),故不可写 `{python}` 之类占位。
+
+    返回 extensions_root 路径。
+    """
+    root = Path(td) / "extensions"
+    ext_dir = root / "ref_storage"
+    ext_dir.mkdir(parents=True, exist_ok=True)
+    if manifest_kind == "branch":
+        # 负例:kind=branch(language=python 需 entry 文件真实存在,故写占位)
+        (ext_dir / "main.py").write_text("# 占位:仅用于 manifest 解析\n", encoding="utf-8")
+        manifest: Dict[str, Any] = {
+            "name": "ref_storage", "version": "1.0.0", "language": "python",
+            "entry": "main.py", "capabilities": [],
+        }
+    else:
+        manifest = {
+            "name": "ref_storage", "version": "1.0.0",
+            "kind": "host-component", "slots": ["storage", "history"],
+            "language": "other", "transport": "stdio",
+            "command": [sys.executable, str(backend)],
+            "capabilities": [],   # host-component 强制空(P-6)
+        }
+    (ext_dir / "manifest.yaml").write_text(
+        yaml.safe_dump(manifest, allow_unicode=True), encoding="utf-8"
+    )
+    return str(root)
+
+
+def _hc_inject_db_placeholder(hc: List[Dict[str, Any]], placeholder: str,
+                              db: str) -> None:
+    """把 host_components[*].options.args 里的 `@db` 占位替换为真实库路径。"""
+    for entry in hc:
+        if not isinstance(entry, dict):
+            continue
+        opts = entry.setdefault("options", {})
+        if not isinstance(opts, dict):
+            continue
+        opts["args"] = [db if a == placeholder else a for a in (opts.get("args") or [])]
+
+
+async def _run_host_component_case(case: Dict[str, Any],
+                                   custom_events: List[Dict[str, Any]]) -> List[str]:
+    """host-component 场景:正常装载(同实例覆盖双插槽) + 快速失败矩阵。
+
+    观测经 ``custom:host_component_result`` / ``custom:host_component_reject``。
+    """
+    from teage_liu2.core.extension_loader import wire_extensions
+    from teage_liu2.core.history import HistoryStore
+    from teage_liu2.core.storage import MessageStore, StorageProvider
+    from teage_liu2.server.host_components import load_host_components
+
+    errors: List[str] = []
+    inputs = case.get("inputs") or {}
+    expected = case.get("expected") or {}
+    placeholder = inputs.get("db_placeholder", "@db")
+    backend = Path(__file__).resolve().parent / "tools" / "reference_storage_backend.py"
+
+    if case["id"].startswith("host-component-reject"):
+        results: List[Dict[str, Any]] = []
+        with tempfile.TemporaryDirectory(prefix="bs_hc_rej_") as td:
+            for spec in inputs.get("rejects") or []:
+                label = spec.get("label", "")
+                try:
+                    hc = copy.deepcopy(spec.get("host_components") or [])
+                    _hc_inject_db_placeholder(hc, placeholder, str(Path(td) / "hc.db"))
+                    for entry in hc:
+                        # sqlite backend 的库路径也指到临时目录(避免写入仓库 data2/)
+                        if isinstance(entry, dict) and entry.get("backend") == "sqlite":
+                            entry.setdefault("options", {}).setdefault(
+                                "sqlite_path", str(Path(td) / "hc.db"))
+                    root = _hc_materialize_extensions_root(
+                        td, spec.get("manifest_kind", "host-component"), backend)
+                    cfg = {"core": {"extensions_root": root}, "host_components": hc}
+                    merged, specs, _ = wire_extensions(cfg)
+                    load_host_components(merged, specs)
+                except Exception as e:  # noqa: BLE001 - 负例:期望抛错
+                    results.append({
+                        "label": label, "rejected": True,
+                        "matched": bool(re.search(spec.get("expect_regex", ""), str(e))),
+                        "error": f"{type(e).__name__}: {e}",
+                    })
+                    # 快速失败发生在"已创建部分对象"之后时(如首条 sqlite 接管成功、
+                    # 第二条因重复接管抛错),未返回的对象会持库文件句柄 → 临时目录
+                    # 清理失败(Windows WinError 32)。显式 GC 触发其析构关闭连接。
+                    gc.collect()
+                else:
+                    results.append({"label": label, "rejected": False, "matched": False,
+                                    "error": "非法配置未抛错(违反快速失败)"})
+        rejected = sum(1 for r in results if r["rejected"])
+        matched = sum(1 for r in results if r["matched"])
+        custom_events.append({
+            "type": "custom:host_component_reject",
+            "payload": {
+                "case_count": len(results),
+                "rejected_count": rejected,
+                "matched_count": matched,
+                "all_rejected": bool(results) and rejected == len(results),
+            },
+        })
+    else:
+        mode = inputs.get("mode", "load")
+        with tempfile.TemporaryDirectory(prefix="bs_hc_") as td:
+            hc = copy.deepcopy(inputs.get("host_components") or [])
+            _hc_inject_db_placeholder(hc, placeholder, str(Path(td) / "ref.db"))
+            root = _hc_materialize_extensions_root(
+                td, inputs.get("manifest_kind", "host-component"), backend)
+            cfg: Dict[str, Any] = {"core": {"extensions_root": root}}
+            if mode != "default_path":
+                cfg["host_components"] = hc
+            loaded: Dict[str, Any] = {}
+            disabled: List[str] = []
+            if mode == "disabled_probe":
+                # P-1 条件③:已装未启用统计(目录内有 branch 扩展,core.branches 未声明)
+                try:
+                    _merged, specs, disabled = wire_extensions(cfg)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"wire_extensions 失败: {type(e).__name__}: {e}")
+                    specs = {}
+                custom_events.append({
+                    "type": "custom:host_component_result",
+                    "payload": {
+                        "disabled": list(disabled),
+                        "installed_count": len(specs),
+                        "has_disabled": bool(disabled),
+                    },
+                })
+            elif mode == "default_path":
+                # P-5 条件③:缺省省略 host_components = 全部插槽用 core 默认实现
+                try:
+                    merged, specs, _ = wire_extensions(cfg)
+                    loaded = load_host_components(merged, specs)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"缺省路径装载失败: {type(e).__name__}: {e}")
+                custom_events.append({
+                    "type": "custom:host_component_result",
+                    "payload": {
+                        "default_empty": loaded == {},
+                        "slots": sorted(loaded.keys()),
+                    },
+                })
+            elif mode == "uninstalled_probe":
+                # P-1 条件③:声明了未安装的 branch 扩展 → 启动失败(不静默降级)
+                cfg["core"]["branches"] = {"ghost_ext": {"enabled": True}}
+                try:
+                    wire_extensions(cfg)
+                except Exception as e:  # noqa: BLE001
+                    custom_events.append({
+                        "type": "custom:host_component_result",
+                        "payload": {
+                            "uninstalled_rejected": bool(re.search("未安装", str(e))),
+                        },
+                    })
+                else:
+                    custom_events.append({
+                        "type": "custom:host_component_result",
+                        "payload": {"uninstalled_rejected": False},
+                    })
+            else:
+                try:
+                    merged, specs, disabled = wire_extensions(cfg)
+                    loaded = load_host_components(merged, specs)
+                except Exception as e:  # noqa: BLE001 - 装载失败计入用例结果
+                    errors.append(f"host_components 装载失败: {type(e).__name__}: {e}")
+                if loaded:
+                    proxy = loaded.get("storage")
+                    try:
+                        # 审查 R7:两侧都 sorted 后比较
+                        custom_events.append({
+                            "type": "custom:host_component_result",
+                            "payload": {
+                                "ok": sorted(loaded.keys()) == ["history", "storage"],
+                                "slots": sorted(loaded.keys()),
+                                "same_instance": loaded.get("history") is proxy,  # P-5 同实例覆盖双槽
+                                "storage_isinstance": isinstance(proxy, StorageProvider),
+                                "history_isinstance": (
+                                    isinstance(loaded.get("history"), HistoryStore)
+                                    and isinstance(loaded.get("history"), MessageStore)
+                                ),
+                                "disabled": list(disabled),
+                            },
+                        })
+                    finally:
+                        proxy.close()
+
+    errors += _assert_event_stream(expected.get("event_stream") or [], custom_events)
+    errors += _assert_final(
+        expected.get("final") or {},
+        {"type": EV_DONE, "is_complete": True},
+        [],
+        None,
+    )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# 33 events 域:未知事件类型宽容(E-2;L3 旁路层驱动)
+# ---------------------------------------------------------------------------
+async def _run_events_case(case: Dict[str, Any],
+                           custom_events: List[Dict[str, Any]]) -> List[str]:
+    """E-2:消费方(L3 旁路)遇到未知 type 事件 —— 透传或记录,绝不崩溃。
+
+    未知类型不得阻断其后已知 L3 事件的投递(顺序完整性)。
+    """
+    from teage_liu2.core.event_stream import EventStream
+
+    errors: List[str] = []
+    inputs = case.get("inputs") or {}
+    expected = case.get("expected") or {}
+    sink = L3BatchSink(batch_window=0.02, batch_max=64)
+    received: List[Dict[str, Any]] = []
+
+    async def deliver(events: List[dict]) -> None:
+        received.extend(events)
+
+    sink.subscribe("obs", deliver)
+    es = EventStream(l3_sink=sink)
+    crashed = False
+    try:
+        for ev in inputs.get("route_events") or []:
+            es.route_l3(ev)
+        await asyncio.sleep(0.1)   # 等批处理窗口冲刷
+    except Exception:  # noqa: BLE001 - "未知类型致崩溃"正是本用例要抓的缺陷
+        crashed = True
+    received_types = [ev.get("type") for ev in received]
+    custom_events.append({
+        "type": "custom:events_result",
+        "payload": {
+            "crashed": crashed,
+            "received_types": received_types,
+            "known_l3_delivered": "tool_use" in received_types,
+        },
+    })
+    errors += _assert_event_stream(expected.get("event_stream") or [], custom_events)
+    await sink.close()
     return errors
 
 
@@ -1310,6 +1871,15 @@ async def run_case(case: Dict[str, Any], verbose: bool) -> _CaseResult:
         "invoke-llm-12", "l3-observe-13", "lifecycle-reload-14",
         "evolution-negotiation-15", "error-responsibility-16",
         "host-port-inprocess-17", "error-codes-20", "config-domain-21",
+        "stdio-proxy-roundtrip-22",
+        "stdio-proxy-dual-channel-42",
+        "host-component-slot-23", "host-component-reject-24",
+        "host-component-disabled-40", "host-component-default-41",
+        "host-component-uninstalled-43",
+        "storage-batch-atomic-26",   # 注:25(injection-dedup)是 pipeline 类,不入本表
+        "events-unknown-type-33",    # 注:34/35/36 是 pipeline 类,不入本表
+        "types-doc-opaque-37",       # 注:38 是 pipeline 类,不入本表
+        "config-domain-secret-39",
     }
     # 错误码"日志面"捕获(错误码断言的唯一日志通道)
     capture = _LogCapture()

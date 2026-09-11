@@ -1,0 +1,30 @@
+{
+  "id": "events-stepend-dual-35",
+  "protocol_version": "v1.0.0",
+  "description": "events E-8(step_end 双呈现): 同一扩展既实现 after_step(L2 摘要通道)又被 L3 订阅 —— L2 与 L3 各自呈现且**各一份**:L2 走 after_step 钩子(调用 1 次),L3 走原始 step_end 事件(type_counts.step_end = 1),不得从两条通道收到重复副本。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_obs",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after_step"],
+        "capabilities": ["observe"]
+      }
+    ]
+  },
+  "inputs": { "session_id": "s-35", "user_input": "hi" },
+  "expected": {
+    "invocations": [
+      { "hook": "after_step", "extension": "ext_obs" }
+    ],
+    "event_stream": [
+      {
+        "type": "custom:pipeline_l3_result",
+        "payload": { "type_counts": { "ext_obs": { "step_end": 1 } } }
+      }
+    ],
+    "final": { "termination_reason": "normal" }
+  }
+}

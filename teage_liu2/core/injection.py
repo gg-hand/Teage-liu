@@ -130,7 +130,9 @@ def assemble_injections(
     - BEFORE_INPUT → 一条 user 消息置于当前输入前
     未知层:warning 并忽略(单条隔离,不影响对话)。
     """
-    budgets = budgets or DEFAULT_LAYER_BUDGETS
+    # 部分层覆盖:未给出的层回退默认值(2026-09-11 修复 —— 此前只传部分层会在
+    # 取 budgets[L_SYSTEM] 等处 KeyError,使"按层配置预算"实际不可用)
+    budgets = {**DEFAULT_LAYER_BUDGETS, **(budgets or {})}
     injections = _dedupe_by_key(injections)
 
     by_layer: Dict[str, List[Injection]] = {L: [] for L in _ALL_LAYERS}

@@ -1,0 +1,33 @@
+{
+  "id": "hooks-readonly-31",
+  "protocol_version": "v1.0.0",
+  "description": "hooks H-17(可见性约束)+H-15(增量收口不变量): 通过 inputs.mutate_snapshot 让扩展在 before 内**原地篡改** snapshot.messages(追加一条 assistant)与 extra —— 断言 = 进入 LLM 的消息序列包含该篡改(messages_roles 为 [user, assistant]),即如实锚定当前实现:**core 未阻止容器级越界篡改**(Snapshot 仅 frozen 属性、messages/extra 容器仍可变),H-17 的'只读视图'目前只是契约约定而非内核强制。该缺口已登记 CORE-缺口记录;**缺口修复(快照只读化)后本用例必须收紧为 [user] 并去掉 mutate 语义** —— 用例变红即为修复信号。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-31",
+    "user_input": "hi",
+    "mutate_snapshot": true,
+    "ext_a_actions": []
+  },
+  "expected": {
+    "event_stream": [
+      { "type": "step_start" },
+      { "type": "done", "payload": { "termination_reason": "normal" } }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "llm_assert": { "messages_roles": ["user", "assistant"] }
+    }
+  }
+}

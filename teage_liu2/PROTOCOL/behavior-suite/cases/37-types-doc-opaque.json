@@ -1,0 +1,45 @@
+{
+  "id": "types-doc-opaque-37",
+  "protocol_version": "v1.0.0",
+  "description": "types T-7(doc 为扩展私有数据): 经宿主存储通道写入的 doc,其内部结构由写入方自治 —— 内核只透传、不解析、不校验、不消费;嵌套任意结构(含中文键/中文值/null/布尔/深层数组)写入后经 query 读回必须逐字段相等。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "session_id": "s-37",
+    "storage_ops": [
+      {
+        "op": "write",
+        "args": ["t37.doc", [
+          {
+            "s": "字符串",
+            "n": 42,
+            "b": true,
+            "nil": null,
+            "arr": [1, "二", { "deep": [true, null] }],
+            "obj": { "中文键": { "x": [1, 2, 3] } }
+          }
+        ]],
+        "assert": { "length": 1 }
+      },
+      {
+        "op": "query",
+        "args": ["t37.doc"],
+        "assert": [
+          {
+            "s": "字符串",
+            "n": 42,
+            "b": true,
+            "nil": null,
+            "arr": [1, "二", { "deep": [true, null] }],
+            "obj": { "中文键": { "x": [1, 2, 3] } }
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      { "type": "custom:stdio_result", "payload": { "op_count": 2, "handshake_ok": true } }
+    ],
+    "final": { "is_complete": true }
+  }
+}

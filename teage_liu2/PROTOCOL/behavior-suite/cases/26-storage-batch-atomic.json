@@ -1,0 +1,28 @@
+{
+  "id": "storage-batch-atomic-26",
+  "protocol_version": "v1.0.0",
+  "description": "P-4 条款③: 批量写 docs[] 同事务原子 —— 合法批量全部落盘(2 条);紧随其后的一批含非法元素(数字,非对象)在**写入过程中**失败(前一条已插入),必须整批回滚;收尾探针回读确认仍为 2 条(非原子实现会残留第 3 条)。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "session_id": "s-26",
+    "storage_ops": [
+      { "op": "write", "args": ["t26.batch", [{ "a": 1 }, { "a": 2 }]], "assert": { "length": 2 } },
+      { "op": "write", "args": ["t26.batch", [{ "a": 3 }, 123]], "expect_error": true },
+      { "op": "query", "args": ["t26.batch"], "assert": { "length": 2 } }
+    ],
+    "final_probe": { "op": "query", "args": ["t26.batch"] }
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:stdio_result",
+        "payload": {
+          "op_count": 3,
+          "rejected_non_dict": true,
+          "final_rows": 2
+        }
+      }
+    ],
+    "final": { "is_complete": true }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "id": "hooks-append-role-27",
+  "protocol_version": "v1.0.0",
+  "description": "hooks H-3(AppendMessage 角色限制): before 返回的追加消息仅允许 role=user —— 同一批次中 role=assistant 的追加被 schema 级校验拒绝(HOOK_INVALID_ACTION),合法 user 追加照常应用,对话不中断(done normal)。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-27",
+    "user_input": "hi",
+    "ext_a_actions": [
+      { "op": "AppendMessage", "message": { "role": "user", "content": "合法追加" } },
+      { "op": "AppendMessage", "message": { "role": "assistant", "content": "非法追加" } }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      { "type": "done", "payload": { "termination_reason": "normal", "is_complete": true } }
+    ],
+    "error_codes": { "must_include": ["HOOK_INVALID_ACTION"] },
+    "final": { "termination_reason": "normal", "is_complete": true }
+  }
+}

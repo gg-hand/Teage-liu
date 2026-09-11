@@ -751,16 +751,25 @@ class InProcessHostPort:
         self._raise_if_error(resp)
         return resp.get("result", {})
 
-    def register_task(self, task_id: str, description: str = "") -> None:
-        self._bus.handle(
+    async def register_task(self, task_id: str, description: str = "") -> None:
+        """登记扩展进程内后台任务(T-4;宿主只登记/协调取消)。
+
+        2026-09-11 修复:此前为**同步方法**却调用 async ``bus.handle`` 且未 await
+        → 协程被丢弃、``task_register`` 永不执行(仅 RuntimeWarning)。现与
+        ``storage_*`` / ``invoke_llm`` 同形(async + await + 错误上抛)。
+        """
+        resp = await self._bus.handle(
             self._name,
             TransportFrame(MSG_TASK_REGISTER, {"task_id": task_id, "description": description}),
         )
+        self._raise_if_error(resp)
 
-    def cancel_task(self, task_id: str) -> None:
-        self._bus.handle(
+    async def cancel_task(self, task_id: str) -> None:
+        """协调取消已登记任务(实际执行终止由扩展进程负责,T-4)。"""
+        resp = await self._bus.handle(
             self._name, TransportFrame(MSG_TASK_CANCEL, {"task_id": task_id})
         )
+        self._raise_if_error(resp)
 
     @staticmethod
     def _raise_if_error(resp: Dict[str, Any]) -> None:

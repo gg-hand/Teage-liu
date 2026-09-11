@@ -21,6 +21,8 @@
 
 ## 4. 消息类型（v1.0 全集）
 
+> **条款编号约定（2026-09-11）**：本域条款编号 = `T-1..T-6`（写作 `transport T-n`）；**跨域引用必须带域名前缀** —— types 域同样使用 `T-*` 编号（`types T-1..T-8`），不带前缀即歧义。编号本身不变（避免破坏 PENDING 与既有引用）。
+
 `invoke_hook / invoke_tool / invoke_llm / storage_write / storage_read / storage_query / storage_delete / task_register / task_cancel / event / heartbeat / shutdown`
 
 **行为条款 T-1（event = L3 观测通知）**: `event` 消息类型 = 事件流 L3 观测通知（异步批处理，非 L1 热路径透传）。

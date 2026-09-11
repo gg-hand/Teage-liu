@@ -1,0 +1,24 @@
+{
+  "id": "host-component-disabled-40",
+  "protocol_version": "v1.0.0",
+  "description": "P-1 条件③: 已装未启用统计 —— branch 扩展已存在于 extensions_root 但 core.branches 未声明时,wire_extensions 返回 disabled 列表含该名(安装 != 激活),该扩展不被装载。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "mode": "disabled_probe",
+    "manifest_kind": "branch",
+    "extension_name": "ref_storage"
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:host_component_result",
+        "payload": {
+          "disabled": ["ref_storage"],
+          "installed_count": 1,
+          "has_disabled": true
+        }
+      }
+    ],
+    "final": { "is_complete": true }
+  }
+}

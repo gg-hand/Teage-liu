@@ -55,8 +55,8 @@ await self.host_port.storage_read(kind, doc_id)
 await self.host_port.storage_query(kind, limit=None, **filters)
 await self.host_port.storage_delete(kind, doc_id)
 await self.host_port.invoke_llm(role="main", messages=[...], system=None, max_tokens=None)
-self.host_port.register_task(task_id, description="")       # 宿主登记扩展侧任务(可观测)
-self.host_port.cancel_task(task_id)
+await self.host_port.register_task(task_id, description="")  # 宿主登记扩展侧任务(可观测)
+await self.host_port.cancel_task(task_id)
 ```
 
 `host_port` 在装配时由 registry 注入(可能为 None 当未配置通道时),使用前判空。
@@ -284,7 +284,7 @@ class PollBranch(Branch):
         self._task = asyncio.create_task(self._poll())   # 自身进程内协程
         if self.host_port is not None:
             # 宿主登记(可观测/协调取消);任务归属扩展进程,宿主不承载执行(T-4)
-            self.host_port.register_task("poll", description="poll loop")
+            await self.host_port.register_task("poll", description="poll loop")
 
     async def _poll(self) -> None:
         try:
@@ -295,11 +295,11 @@ class PollBranch(Branch):
             pass  # teardown 取消
 
     async def teardown(self) -> None:
-        self._task.cancel()   # 扩展自取消;宿主 shutdown cancel_all 兜底
+        self._task.cancel()   # 扩展自取消(必须:热重载重建不兜底);宿主 shutdown cancel_all 兜底
 ```
 
-- 同语言扩展后台任务直接 `asyncio.create_task`(宿主只经 `host_port.register_task` 登记);
-- `teardown` 自取消;宿主 shutdown 与热重载重建时 `cancel_all` 兜底,不泄漏。
+- 同语言扩展后台任务直接 `asyncio.create_task`(宿主只经 `await host_port.register_task` 登记 —— `register_task` / `cancel_task` 为 **async**,2026-09-11 修复其"未 await 丢弃协程"缺陷后与 `storage_*` / `invoke_llm` 同形);
+- `teardown` **必须**自取消;宿主 **shutdown** 时 `cancel_all` 兜底。**热重载重建不调 `cancel_all`**(`core/registry.py` 的 `rebuild` 只做链级替换 + teardown 旧链),扩展不得依赖宿主兜底,否则任务泄漏(文档-代码漂移已于 2026-09-11 修正)。
 
 ---
 

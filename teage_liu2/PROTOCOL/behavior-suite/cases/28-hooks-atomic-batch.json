@@ -1,0 +1,45 @@
+{
+  "id": "hooks-atomic-batch-28",
+  "protocol_version": "v1.0.0",
+  "description": "hooks H-8(原子批次)+H-9(schema 级校验): 同一扩展返回的批次中前 2 条合法 SetExtra 必须作为一批**原子推进**(后注册扩展 ext_b 在 before 时已能看到),第 3 条(key 非法)被拒绝并记 HOOK_INVALID_ACTION —— 非法条不得使同批合法条丢失,也不得半批次可见。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_b",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-28",
+    "user_input": "hi",
+    "ext_a_actions": [
+      { "op": "SetExtra", "key": "a.one", "value": 1 },
+      { "op": "SetExtra", "key": "a.two", "value": 2 },
+      { "op": "SetExtra", "key": "BAD KEY", "value": 3 }
+    ]
+  },
+  "expected": {
+    "invocations": [
+      {
+        "hook": "before",
+        "extension": "ext_b",
+        "snapshot_assert": { "extra": { "a.one": 1, "a.two": 2 } }
+      }
+    ],
+    "error_codes": { "must_include": ["HOOK_INVALID_ACTION"] },
+    "final": { "termination_reason": "normal" }
+  }
+}

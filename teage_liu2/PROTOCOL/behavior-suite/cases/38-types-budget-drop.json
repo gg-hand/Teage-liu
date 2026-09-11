@@ -1,0 +1,35 @@
+{
+  "id": "types-budget-drop-38",
+  "protocol_version": "v1.0.0",
+  "description": "types T-1(注入预算裁剪,整段丢弃不截半): 层内累计超预算时该注入项**整段丢弃** —— 注入内容(40 字符)长于该层预算(8 字符)时必须完全不出现,不得出现被截断的前缀。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["build_injections"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-38",
+    "user_input": "hi",
+    "core_overrides": { "injection_budget": { "STABLE_SYSTEM": 8 } },
+    "ext_a_injections": [
+      {
+        "layer": "STABLE_SYSTEM",
+        "content": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "key": "budget.big"
+      }
+    ]
+  },
+  "expected": {
+    "final": {
+      "termination_reason": "normal",
+      "llm_assert": { "system_regex": "(?s)^(?!.*AAAA)" }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "id": "events-observe-readonly-36",
+  "protocol_version": "v1.0.0",
+  "description": "events E-9(只读强制): 声明 observe 的扩展即使返回 action(SetExtra),core 一律**忽略并记录** HOOK_TERMINAL_ACTION_IGNORED —— 对话状态不受影响、对话正常完成(不得静默放行,也不得中断对话)。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_obs",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": ["observe"]
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-36",
+    "user_input": "hi",
+    "ext_obs_actions": [
+      { "op": "SetExtra", "key": "obs.injected", "value": 1 },
+      { "op": "SetStop", "reason": "should-be-ignored" }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      { "type": "done", "payload": { "termination_reason": "normal", "is_complete": true } }
+    ],
+    "error_codes": { "must_include": ["HOOK_TERMINAL_ACTION_IGNORED"] },
+    "final": { "termination_reason": "normal", "is_complete": true }
+  }
+}

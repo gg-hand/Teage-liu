@@ -31,7 +31,28 @@ core:
 
 > **补录说明（2026-09-10）**：`max_snapshot_bytes` / `max_message_bytes` / `max_messages_per_conversation`（§types T-8 资源上限）与 `extensions_root`（2026-09-08 统一扩展目录树）此前实现已支持但本表遗漏，现补录。按 §3 演进规则，新增 core 配置键属 minor 演进面：`extensions_root` 与 manifest 规范一并登记于 PENDING **P-1**（涉及域含 config）；三个资源上限键**尚无 PENDING 条目**（其语义由 `types.spec.md` §7 的 T-8 条款承载），待 P-1 收口评审时一并决定是否登记。
 
-## 3. 版本与演进
+## 3. 宿主组件插槽（host_components，P-5 条件④，2026-09-11 归档）
+
+宿主组件（host-component）是**接管宿主插槽**的异语言 backend（如 Rust 存储后端），与枝干扩展共用统一扩展目录树与 manifest（见 lifecycle 域 §3.2），不经钩子链。
+
+```yaml
+host_components:                       # 可选;缺省省略 = 内置 SQLite 行为完全不变
+  - slot: storage                      # 必填,∈ SLOTS 白名单
+    backend: stdio-proxy               # 必填,∈ BACKENDS 注册表
+    options:                           # 可选,backend 自解释
+      extension: storage_rust          # 引用 extensions_root 下 manifest(取其 command)
+      args: [--db, data2/storage_rust/sessions.db]   # 追加启动参数
+```
+
+- **结构**：`[{slot, backend, options}]` 数组（确定性 = 启动期静态装配，无运行期热插拔）。
+- **SLOTS 白名单**：`host_components.SLOTS`（当前 `storage` / `history`）——**未知插槽 = 启动失败**；同一 `slot` 重复接管 = 启动失败。
+- **BACKENDS 注册表**：`backend` 名必须已注册（未注册 = 启动失败）。
+- **工厂签名**：`factory(cfg, options, specs) -> {slot: obj}`；返回映射必须覆盖被请求的插槽，缺项 = 启动失败。
+- **同实例覆盖多插槽**：一个 backend 实例可同时接管 `storage` + `history`（P-5 语义，如 stdio-proxy 单实例双插槽）；宿主按返回映射装配。
+- **与扩展目录的关系**：`options.extension`（引用 extensions_root 下扩展的 manifest，取其 command；相对路径相对 manifest 目录解析）与 `options.command`（直接命令）**二选一，同时给出 = 启动失败**；被引用扩展必须是 `kind: host-component`（引用 `kind: branch` = 启动失败）。
+- **失败语义**：上述任一非法配置一律 = **启动失败（可读错误）**，不做静默降级、不回落内置实现。
+
+## 4. 版本与演进
 
 - 新增 core 配置键 = minor 演进；删除/改名配置键 = major 演进。
 - 扩展配置段由扩展自管 schema（不在 core 域 schema 内）。

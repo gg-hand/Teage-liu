@@ -48,6 +48,9 @@
     ],
     "final": {
       "is_complete": true
+    },
+    "error_codes": {
+      "must_include": ["TOOL_REJECTED_BY_POLICY"]
     }
   }
 }

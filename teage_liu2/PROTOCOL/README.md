@@ -31,6 +31,22 @@
 
 **断言能力纪律（2026-09-10 起）**：runner 对**未实现的断言键一律显式失败**（`_check_supported`），禁止静默忽略——此前 `final.persisted` / `invocations[].isolation` 曾被静默跳过，形成"假绿"。
 
+**依赖边界（2026-09-11 补充）**：runner 依赖 `teage_liu2/core/` 与 `teage_liu2/tests_core/fake_llm.py`；WP-A（M2）起**额外允许**依赖 `teage_liu2/server/` —— 用例 22（`stdio-proxy-roundtrip`）已引用 `server.storage_stdio_proxy.StdioStorageProxy`，用例 23/24（`host-component`）将引用 `server.host_components.load_host_components`。该依赖的定位始终是**本实现的 Python 参考执行器**（语言无关交付物 = `cases/*.json` + `suite.schema.json`，保持零依赖）。
+
+**场景能力补充（2026-09-11 落地审查）**：新增用例 `host-component-disabled-40`（未声明不启用＝已装未启用统计）、`host-component-default-41`（缺省省略 `host_components`＝全插槽用 core 默认实现）、`stdio-proxy-dual-channel-42`（P-7 双档：`custom:stdio_result` 增 `buffered_frames` / `flush_direct_calls` 字段）、`host-component-uninstalled-43`（声明未装＝启动失败）；`error-codes-20` 扩展 `llm_error` / `storage_write_fail` 两类场景（套件错误码锚定 8 → **12 码**）。
+
+**WP-A 场景与断言能力（2026-09-11，M2；用例集 21 → 39 条）**：
+
+- **新增协议层分支**：`stdio-proxy` / `storage-batch-atomic` / `types-doc-opaque`（真实子进程：用例 22 全链往返、26 批量原子性、37 doc 透明性）、`host-component`（用例 23 插槽装载、24 快速失败矩阵）、`events-`（用例 33 未知事件类型宽容）；
+- **`expected.final.llm_assert`**：`system_contains` / `system_regex` / `messages_roles` / `message_count`（对 `FakeLLMClient.last_system` / `last_messages` 断言；**未识别子键显式失败**，防"假绿"）；
+- **`inputs` 新键**：`storage_ops`（`{op,args?,kwargs?,assert?,expect_error?}`）、`final_probe`、`core_overrides`（**仅**覆盖 `ChatPipeline` 构造参数）、`storage_writer`、`session_store`、`mutate_snapshot`、`route_events`、`env`/`yaml`/`probe`；
+- **聚合观测事件**：`custom:stdio_result` / `custom:host_component_result` / `custom:host_component_reject` / `custom:pipeline_l3_result` / `custom:events_result` / `custom:config_secret_result`；
+- **P-4 参考后端** `tools/reference_storage_backend.py`：独立于 `teage_liu2.core` 的第二个 P-4 实现（标准库 sqlite3），作为用例 22/26/37 的被测子进程，用以印证"任意语言可按 P-4 实现"。
+
+## 条款编号约定（2026-09-11）
+
+各域条款编号**域内唯一**：`types T-*` / `transport T-*` / `hooks H-*` / `events E-*` / `lifecycle L-*` / `storage S-*` / `config C-*` / `errors R-*`。**跨域引用必须带域名前缀**（如 `transport T-5`、`types T-8`）—— types 与 transport 两域历史上都使用 `T-*`，无前缀即歧义；既有编号一律不改（避免破坏 PENDING 与既有引用）。
+
 ## 核心约束（速查）
 
 - `extension_name`: `^[a-z0-9_]+$`（禁点）

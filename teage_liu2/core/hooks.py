@@ -24,7 +24,13 @@ from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
 from .actions import Action, ActionResult, ToolDecision, validate_action
-from .errors import HOOK_EXCEPTION, HOOK_TIMEOUT
+from .errors import (
+    HOOK_EXCEPTION,
+    HOOK_TERMINAL_ACTION_IGNORED,
+    HOOK_TIMEOUT,
+    TOOL_EXEC_FAILED,
+    TOOL_MODIFY_INVALID,
+)
 from .injection import Injection, _dedupe_by_key
 from .snapshot import apply_action_batch
 from .types import Snapshot, StepSummary
@@ -210,10 +216,14 @@ class HookChain:
 
     @staticmethod
     def _log_observe_action(branch: Branch, hook_name: str, actions: Any) -> None:
-        """observe 扩展返回 action → 忽略 + error 级日志(§3.2/§15-A4③)。"""
+        """observe 扩展返回 action → 忽略 + error 级日志(§3.2/§15-A4③/E-9)。
+
+        2026-09-11 修复:此前日志**缺 `HOOK_TERMINAL_ACTION_IGNORED` 码前缀** ——
+        E-9 条款明文要求该码(可观测面),属契约-实现漂移。
+        """
         logger.error(
-            "observe 扩展 %s 的 %s 钩子返回 %d 个 action,已忽略(只读约束)",
-            branch.name, hook_name, len(actions),
+            "%s: observe 扩展 %s 的 %s 钩子返回 %d 个 action,已忽略(只读约束)",
+            HOOK_TERMINAL_ACTION_IGNORED, branch.name, hook_name, len(actions),
         )
 
     # ------------------------------------------------------------------
@@ -340,6 +350,13 @@ class HookChain:
                 return decision, cur_input
             if decision.is_modify and decision.input is not None:
                 cur_input = decision.input
+            elif decision.is_modify:
+                # P-8 ⑤(2026-09-11 WP-C):modify 但 input 为 None 是非法组合,
+                # 此前静默忽略(无 else 分支)→ 现记码并降级 allow(不中断对话)
+                logger.error(
+                    "%s: 枝干 %s 的 pre_tool_call 返回 modify 但 input 为 %r,按 allow 处理",
+                    TOOL_MODIFY_INVALID, branch.name, decision.input,
+                )
         return ToolDecision(decision="allow", input=cur_input), cur_input
 
     async def dispatch_tool_call(
@@ -366,8 +383,10 @@ class HookChain:
                 else:
                     result = await branch.on_tool_call(snapshot, tool_name, tool_input)
             except Exception as e:
+                # P-8 ⑤(2026-09-11 WP-C):补 CODE: 前缀(§errors §5 日志面)
                 logger.error(
-                    "枝干 %s 执行工具 %s 异常: %s", branch.name, tool_name, e
+                    "%s: 枝干 %s 执行工具 %s 异常: %s",
+                    TOOL_EXEC_FAILED, branch.name, tool_name, e,
                 )
                 return e
             if result is not NotImplemented:

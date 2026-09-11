@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from teage_liu2.core.config import CoreConfig, core_config_from
+from teage_liu2.core.config import CoreConfig, core_config_from, validate_required_env_vars
+from teage_liu2.core.errors import CONFIG_MISSING_KEY
 
 
 def test_defaults_when_core_missing():
@@ -104,3 +105,9 @@ def test_extensions_root_default_and_validation():
         core_config_from({"core": {"extensions_root": ""}})
     with pytest.raises(ValueError, match="extensions_root"):
         core_config_from({"core": {"extensions_root": 123}})
+
+
+def test_missing_api_key_raises_config_missing_key():
+    """P-8② 零锚定码补齐:关键 API Key 缺失 → CONFIG_MISSING_KEY(启动失败)。"""
+    with pytest.raises(ValueError, match=CONFIG_MISSING_KEY):
+        validate_required_env_vars({"llm": {}})

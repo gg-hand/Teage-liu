@@ -1,0 +1,40 @@
+{
+  "id": "injection-dedup-25",
+  "protocol_version": "v1.0.0",
+  "description": "types T-1(注入去重): 同 key 后声明覆盖先声明 —— ext_a(注册在前)与 ext_b(注册在后)各注入一条同层同 key 的 STABLE_SYSTEM 注入;送 LLM 的 system 文本必须只含 b 的内容(BBB)、完全不含 a 的(AAA),且覆盖保留首次出现位置。本用例同时是 WP-A 新增 final.llm_assert 能力的第一个用方。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["build_injections"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_b",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["build_injections"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-25",
+    "user_input": "hi",
+    "ext_a_injections": [{ "layer": "STABLE_SYSTEM", "content": "AAA", "key": "dup" }],
+    "ext_b_injections": [{ "layer": "STABLE_SYSTEM", "content": "BBB", "key": "dup" }]
+  },
+  "expected": {
+    "final": {
+      "llm_assert": {
+        "system_contains": "BBB",
+        "system_regex": "(?s)^(?!.*AAA)"
+      },
+      "termination_reason": "normal"
+    }
+  }
+}

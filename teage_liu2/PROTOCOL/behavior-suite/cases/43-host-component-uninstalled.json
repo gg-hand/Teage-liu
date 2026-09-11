@@ -1,0 +1,20 @@
+{
+  "id": "host-component-uninstalled-43",
+  "protocol_version": "v1.0.0",
+  "description": "P-1 条件③: 声明未安装 —— core.branches 声明了 extensions_root 下不存在的 branch 扩展时,wire_extensions 必须启动失败(可读错误 '未安装'),不静默忽略。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "mode": "uninstalled_probe",
+    "manifest_kind": "branch",
+    "extension_name": "ghost_ext"
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:host_component_result",
+        "payload": { "uninstalled_rejected": true }
+      }
+    ],
+    "final": { "is_complete": true }
+  }
+}
