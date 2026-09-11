@@ -96,8 +96,3 @@ def test_backend_object_not_satisfying_abc_rejected(monkeypatch):
     )
     with pytest.raises(TypeError, match="未满足"):
         hc.load_host_components({"host_components": [{"slot": "storage", "backend": "bad"}]})
-
-
-def test_sqlite_history_store_is_reachable_symbol():
-    """防御性:默认 backend 依赖的符号必须存在(避免文档/代码漂移)。"""
-    assert SQLiteHistoryStore is not None

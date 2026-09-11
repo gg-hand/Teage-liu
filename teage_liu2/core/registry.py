@@ -209,7 +209,8 @@ class BranchRegistry:
             self._chain = old_chain
             self._entries = old_entries
             raise
-        # 替换:teardown 旧链(不取消旧链后台任务 —— 由 Supervisor 在回滚/成功路径负责)
+        # 替换:teardown 旧链。旧链后台任务由旧枝干在 teardown 内自取消(L-4);
+        # 此处**不**调用全局 cancel_all —— TaskRegistry 无链粒度,会误取消新链刚注册的任务。
         try:
             await self._teardown_entries(old_entries)
         except Exception as e:
@@ -276,7 +277,7 @@ class BranchRegistry:
             return
         self._shutdown_done = True
         if task_registry is not None:
-            task_registry.cancel_all()
+            await task_registry.cancel_all()
         await self.teardown_all()
         if message_store is not None:
             message_store.close()

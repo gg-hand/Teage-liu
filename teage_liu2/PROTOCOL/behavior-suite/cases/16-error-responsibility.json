@@ -32,7 +32,7 @@
       { "label": "no_tool_executor", "llm": "tool_use", "expect": { "type": "done", "termination_reason": "no_tool_executor", "is_complete": false } },
       { "label": "llm_error", "llm": "raise_error", "expect": { "type": "error" } },
       { "label": "intercepted", "ext_before": "set_stop", "expect": { "type": "done", "termination_reason": "intercepted", "is_complete": false } },
-      { "label": "tool_rejected", "llm": "tool_use", "ext_policy_decision": { "decision": "reject", "input": "denied" }, "expect": { "type": "tool_result", "is_error": true } }
+      { "label": "tool_rejected", "llm": "tool_use", "ext_policy_decision": { "decision": "reject", "reason": "denied" }, "expect": { "type": "tool_result", "is_error": true } }
     ]
   },
   "expected": {

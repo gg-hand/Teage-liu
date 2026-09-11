@@ -28,9 +28,9 @@
       {
         "type": "custom:l3_result",
         "payload": {
-          "observe_received_types": { "type": "array" },
-          "l1_never_in_transport": { "type": "boolean" },
-          "bounded_queue_no_drop": { "type": "boolean" }
+          "observe_received_types": ["tool_use", "tool_result", "step_end"],
+          "l1_never_in_transport": true,
+          "bounded_queue_no_drop": true
         }
       }
     ],

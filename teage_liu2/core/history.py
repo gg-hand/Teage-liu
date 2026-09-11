@@ -291,8 +291,11 @@ class SQLiteHistoryStore(HistoryStore, MessageStore):
         else:
             sql = "SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC"
             params = [session_id]
-        cur = self.conn.execute(sql, params)
-        return [dict(row) for row in cur.fetchall()]
+        # P2(2026-09-11 综合评审):读路径与写路径统一锁纪律 —— 写线程
+        # (StorageWriter)与 to_thread 读线程共用同一连接,读不加锁属不一致纪律
+        with self._lock:
+            cur = self.conn.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
 
     def update_session_title(self, session_id: str, title: str) -> None:
         with self._lock:
@@ -302,10 +305,11 @@ class SQLiteHistoryStore(HistoryStore, MessageStore):
             self.conn.commit()
 
     def get_session_title(self, session_id: str) -> Optional[str]:
-        cur = self.conn.execute(
-            "SELECT title FROM sessions WHERE id = ?", (session_id,)
-        )
-        row = cur.fetchone()
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT title FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cur.fetchone()
         return row["title"] if row else None
 
     def search_messages(
@@ -332,8 +336,9 @@ class SQLiteHistoryStore(HistoryStore, MessageStore):
             params.append(session_id)
         sql += " ORDER BY m.created_at DESC LIMIT ?"
         params.append(limit)
-        cur = self.conn.execute(sql, params)
-        return [dict(row) for row in cur.fetchall()]
+        with self._lock:
+            cur = self.conn.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
 
     def close(self) -> None:
         try:

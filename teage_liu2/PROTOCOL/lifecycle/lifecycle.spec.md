@@ -7,7 +7,7 @@
 **行为条款 L-1（setup 幂等可重入）**: `setup` 幂等可重入（热重载反复调用）；任一失败 → 逆序 teardown 已成功者 → 启动失败（可读错误）。
 **行为条款 L-2（teardown 幂等）**: `teardown` 幂等；异常仅告警，逆序继续。
 **行为条款 L-3（热重载原子替换）**: build 新链 → 全部 setup 成功 → 原子替换；失败 → 回滚保持旧链。
-**行为条款 L-4（扩展进程重建时序，"接近原子"）**: ① spawn 并握手新进程 → ② 新扩展全部 setup 成功 → ③ 才 teardown + 优雅关闭旧进程（含旧扩展后台任务取消：扩展自取消 + 宿主 cancel_all 兜底）→ ④ 原子替换引用。② 失败 → 杀新进程、保留旧进程与旧链（回滚保持可用；回滚路径不取消旧链后台任务）。重建窗口期心跳/监管仍归旧链，替换完成后再移交新链。
+**行为条款 L-4（扩展进程重建时序，"接近原子"）**: ① spawn 并握手新进程 → ② 新扩展全部 setup 成功 → ③ 才 teardown + 优雅关闭旧进程（含旧链扩展后台任务取消：**由旧扩展在 teardown 内自取消**——任务归属扩展进程，宿主只能登记/观测，无法代为终止；**热重载路径宿主不执行全局 `cancel_all`**，因 `TaskRegistry` 无链粒度、会误取消新链刚注册的任务）→ ④ 原子替换引用。② 失败 → 杀新进程、保留旧进程与旧链（回滚保持可用；回滚路径不取消旧链后台任务）。重建窗口期心跳/监管仍归旧链，替换完成后再移交新链。宿主侧任务的全局 `cancel_all` 兜底只发生在**宿主整体 shutdown**（见 transport T-4）。
 **行为条款 L-5（进程归属粒度）**: 进程归属粒度 = **每扩展一进程**（非链级进程池）——重建链只影响被替换扩展的进程，无级联重建。
 **行为条款 L-6（崩溃隔离）**: 扩展进程崩溃不影响 core 主对话（隔离语义）；崩溃自动重启属部署/外壳层运维职责（§15-B1，非 core 范围）。
 **行为条款 L-7（终态钩子 action 一律忽略）**: `after` / `on_error` 返回的 Action[] 协议强制**忽略并记录**（error 级日志，记 `HOOK_TERMINAL_ACTION_IGNORED`），不区分 observe/策略扩展。终态钩子的数据写入一律经 storage 消息通道（§storage/transport）。
@@ -23,7 +23,9 @@ Extension = { name, lang, transport, protocol_version, hooks_implemented[], capa
 name 匹配 ^[a-z0-9_]+$（禁点, §types 前缀隔离的可判定前提）
 ```
 
-- **声明式钩子**: 扩展声明实现哪些钩子，core 只调用已声明的（减少无效交互）。
+> **字段名勘误（2026-09-11 综合评审 P1-9）**：Extension（套件声明面 / lifecycle.schema.json Extension）的字段名为 **`lang`**；**manifest.yaml**（ExtensionManifest / 安装态声明面）的字段名为 **`language`** —— 两对象两名字，勿混用。
+
+- **声明式钩子**: 扩展声明实现哪些钩子，core 只调用已声明的（减少无效交互）。**例外（隐式参与）**：`build_injections` 对进程内枝干为隐式参与钩子（无需 `hooks_implemented` 声明，默认空实现）。
 - **能力声明（集合）**: `capabilities` 为集合（可组合，自由声明），v1.0 枚举：
   - `observe`: 观测只读——钩子返回的 action 被 core 忽略并记录；
   - `tool_executor`: 工具执行者——启用 transport `invoke_tool` 专用消息；

@@ -13,7 +13,7 @@
 ```
 ┌─ 外壳 server/ ──────────────────────────────────────────────┐
 │   传输层(FastAPI):只依赖 core,不感知 branches                │
-│   装配点例外:composition root 注册枝干工厂(见 §8)            │
+│   生产装载:extensions_root 目录发现(装配点零 register_factory) │
 │   会话并发互斥:session 级 asyncio.Lock(B3 根治,§12)          │
 ├─ 主干 core/ ────────────────────────────────────────────────┤
 │   不可再减的对话动作 + 扩展机制                              │
@@ -34,7 +34,7 @@
 **依赖铁律**(违反即打回):
 1. 主干**不知道任何枝干的名字**(不 import branches);
 2. 枝干依赖 core 的接口,**不依赖彼此**(枝干间只经 `Snapshot.extra` 通信,命名空间 `{branch}.{key}`);
-3. 外壳只依赖 core(唯一例外:装配点注册枝干工厂)。
+3. 外壳只依赖 core(生产装载经 extensions_root 目录发现;`register_factory` 仅为测试/嵌入注入通道)。
 
 **对话流程**(收口四连 + 事件流,§4.4):
 
@@ -78,7 +78,7 @@ class Branch(ABC):
         return NotImplemented                    # 未实现返回 NotImplemented
     async def post_tool_call(self, snapshot, name, input, result, duration) -> list[Action]: return []
     async def after_step(self, snapshot, summary: StepSummary) -> list[Action]: return []
-    async def after(self, snapshot: Snapshot, response: Any) -> list[Action]: return []
+    async def after(self, snapshot: Snapshot, response: AfterResponse) -> list[Action]: return []
     async def on_error(self, snapshot: Snapshot, error: Any) -> list[Action]: return []
     # ---- L3 观测通知(observe 同语言扩展;非钩子,不经 HookChain,旁路异步投递)----
     async def on_l3_events(self, events: list) -> None: return None
@@ -202,11 +202,15 @@ Injection(layer, content, priority=0, key=None)
      (任一 setup 失败 → 逆序 teardown 已成功枝干 → 抛错 = 启动失败)  [E1]
 对话: chat_stream(...) → 事件流(route_l3 旁路)→ after(正常)/ on_error(失败/断连/拦截)
 热重载: POST /reload → supervisor.reload(新进程 spawn → registry.rebuild → 替换/回滚)
-关闭: registry.shutdown(task_registry, message_store, storage_provider)
-     = ①TaskRegistry.cancel_all → ②teardown_all(逆序,枝干各自冲刷)
-       → ③message_store.close → ④storage_provider.close(幂等)      [L1]
+关闭: registry.shutdown(task_registry, message_store=None, storage_provider=None)
+     = ①TaskRegistry.cancel_all → ②teardown_all(逆序,枝干各自冲刷)      [L1]
+     → storage_writer.close(先排空写队列,此时存储连接仍开 —— 2026-09-11 P1-2 重排)
+     → history_store.close → storage_provider.close
      → supervisor.shutdown(扩展进程 shutdown 帧 + 终止兜底)
-     → storage_writer.close(排空写队列) → llm_client.close
+     → l3_sink.close → llm_client.close
+     (重排依据:旧序"先关存储后排空"会把 shutdown 窗口内的残余写全部打在
+      已关闭连接上 → 尾部消息/审计必丢;app.py lifespan 统一清理闭包
+      _teardown_all_resources 在启动段失败时同样兜底,防孤儿进程)
 ```
 
 **宿主能力声明(host,§5 L-8)**:`setup(config, host)` 的 `host` 为**纯数据**(非对象引用):
@@ -236,7 +240,7 @@ Injection(layer, content, priority=0, key=None)
 
 > **会话态协议化通道(§5 L-10)**:扩展访问会话态的**唯一通道 = 快照 extra 会话内延续**——core 构建快照时从 SessionStore 恢复同 session 的 extra 基座,对话结束(done/error)写回最终 extra(经 pipeline 自动接线);**不经 `core.session_store.get` 直访**(那是宿主容器内部实现,扩展经 SetExtra 读写)。
 
-**并发契约**:枝干实例全局共享,必须**无状态或只读共享**;可变状态只能放 `snapshot.extra` / `SessionStore`。同 session 并发对话由**外壳**以 session 级 `asyncio.Lock` 串行化(§18.7,core 单快照无共享)。
+**并发契约**:枝干实例全局共享,必须**无状态或只读共享**;可变状态只能放 `snapshot.extra` / `SessionStore`。同 session 并发对话由**外壳**以 session 级 `asyncio.Lock` 串行化(§18.7);**跨 session 并发**由形态实例每对话新建保证(P0-1,2026-09-11:`ChatPipeline._make_mode_instance`,`final_snapshot` 等对话态不再跨对话共享)。
 
 ---
 
@@ -352,4 +356,4 @@ from teage_liu2.core.modes import MODE_BARE, MODE_LOOP   # 现有形态
 # 新形态 = 新类(实现 run_stream)+ 在 pipeline 形态字典一行注册
 ```
 
-`ChatPipeline` 构造参数:`llm_client / history_store / hooks / mode / max_loops / base_system_prompt / injection_budget / history_window_messages / storage_writer / event_stream`;入口 `chat_stream(session_id, user_input, system=None, cancel_event=None)`。
+`ChatPipeline` 构造参数:`llm_client / history_store / hooks / mode / max_loops / base_system_prompt / injection_budget / history_window_messages / storage_writer / event_stream / session_store / resource_limits`;入口 `chat_stream(session_id, user_input, system=None, cancel_event=None)`。

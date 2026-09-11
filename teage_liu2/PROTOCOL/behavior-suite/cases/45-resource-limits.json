@@ -1,0 +1,57 @@
+{
+  "id": "resource-limits-45",
+  "protocol_version": "v1.0.0",
+  "description": "types T-8 资源上限(§15-A6): core_overrides.resource_limits 注入低上限(max_message_bytes=256)经 ChatPipeline(resource_limits=) 接线生效(2026-09-11 综合评审补接线); 扩展 before 返回超限 AppendMessage → 单条消息被拒(error 日志 + 跳过, 不中断对话), 快照 messages 不含被拒 append(经 after 钩子快照断言 messages 长度=2: 入口 user + assistant —— 若接线失效则 append 被接受, 长度=3); 同批 SetExtra(set 类)不受体积拒绝保留(T-8 定案, extra 断言); 对话正常完成。套件此前对 T-8 零锚定, 本例为首个协议级对拍(超限拒绝路径)。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "bully",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      },
+      {
+        "name": "watcher",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-45",
+    "user_input": "资源上限测试",
+    "core_overrides": {
+      "resource_limits": {
+        "max_snapshot_bytes": 8192,
+        "max_message_bytes": 256,
+        "max_messages_per_conversation": 2000
+      }
+    },
+    "bully_actions": [
+      { "op": "AppendMessage", "message": { "role": "user", "content": "OVERSIZE_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } },
+      { "op": "SetExtra", "key": "bully.kept", "value": "set-class-survives" }
+    ]
+  },
+  "expected": {
+    "event_stream": [],
+    "invocations": [
+      {
+        "hook": "after",
+        "extension": "watcher",
+        "snapshot_assert": {
+          "messages": { "length": 2 },
+          "extra": { "bully.kept": "set-class-survives" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true,
+      "llm_assert": { "messages_roles": ["user"] }
+    }
+  }
+}

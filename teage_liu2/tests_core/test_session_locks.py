@@ -1,7 +1,8 @@
 """L-11 会话并发互斥锚定:`SessionLocks` 此前**零测试**。
 
 锚定:①同 session 串行化(不交错)②严格 LRU 淘汰空闲锁 ③持有中的锁不可淘汰
-(互斥优先,允许临时超限)。
+(互斥优先,允许临时超限)④**边界**:满缓存时同一 session 连续 get 必须拿到同一把锁
+(否则互斥失效 —— 见 2026-09-11 分析发现的老实现漏洞)。
 """
 from __future__ import annotations
 
@@ -63,15 +64,31 @@ def test_lru_evicts_idle_lock():
 
 
 def test_held_lock_not_evicted():
-    """持有中的锁不可淘汰:超限时优先淘汰空闲锁(此处为新建的 s2),s1 保留。"""
+    """持有中的锁不可淘汰:其余锁全被持有时,缓存**临时超限**(互斥优先)。"""
     locks = SessionLocks(max_size=1)
 
     async def main():
         held = await locks.get("s1")
         async with held:
-            await locks.get("s2")  # 超限 → 空闲的 s2 被淘汰
+            returned = await locks.get("s2")  # 其余锁(s1)全被持有 → 临时超限,不淘汰
             assert locks._locks.get("s1") is held
-            assert locks.size == 1
+            assert locks._locks.get("s2") is returned
+            assert locks.size == 2
+
+    asyncio.run(main())
+
+
+def test_just_returned_lock_not_evicted():
+    """边界:满缓存时同一 session 连续 get 必须拿到**同一把锁**(否则互斥失效)。"""
+    locks = SessionLocks(max_size=1)
+
+    async def main():
+        held = await locks.get("s1")
+        async with held:
+            first = await locks.get("s2")
+            second = await locks.get("s2")
+            assert first is second, "同 session 两次 get 返回了不同锁 → 互斥被破坏"
+            assert locks._locks.get("s2") is first
 
     asyncio.run(main())
 

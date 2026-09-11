@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Any, Dict, List, Literal, Optional, Union
 
 # ---------------------------------------------------------------------------
@@ -47,13 +48,18 @@ EventType = Literal[
     "error",
 ]
 
-# 终止原因(与 done 事件配套)
-TERMINATION_NORMAL = "normal"          # end_turn 自然完成
-TERMINATION_MAX_LOOPS = "max_loops"    # 达到循环上限
-TERMINATION_USER_CANCEL = "user_cancel"  # 用户取消
-TERMINATION_NO_TOOL_EXECUTOR = "no_tool_executor"  # LLM 想调工具但无枝干执行
-TERMINATION_LLM_ERROR = "llm_error"    # LLM 调用失败
-TERMINATION_INTERCEPTED = "intercepted"  # 枝干 before 钩子置 ctx.stop 拦截
+# 终止原因(与 done 事件配套):单一事实源 = core/errors.py。
+# 2026-09-11 交叉评审消除双源:此前 types 与 errors 各定义一套(6 vs 7,errors
+# 多出 TERMINATION_TOOL_REJECTED),易漂移;此处 re-export 仅为既有
+# `from .types import TERMINATION_*` 调用点保持兼容。
+from .errors import (  # noqa: E402,F401
+    TERMINATION_INTERCEPTED,
+    TERMINATION_LLM_ERROR,
+    TERMINATION_MAX_LOOPS,
+    TERMINATION_NORMAL,
+    TERMINATION_NO_TOOL_EXECUTOR,
+    TERMINATION_USER_CANCEL,
+)
 
 TerminationReason = str
 
@@ -477,3 +483,27 @@ class Snapshot:
         # stop_reason 不进 to_dict(仅 stop 进),故只失效 base 分量
         return replace(self, stop=stop, stop_reason=reason,
                        _size_cache=_base_unknown(self._size_cache))
+
+
+def readonly_view(snapshot: Snapshot) -> Snapshot:
+    """快照的**只读视图**(types T-3 / hooks H-17):容器字段冻结后交给扩展。
+
+    - ``messages`` / ``tools`` / ``history`` → ``tuple``(无 append/extend/元素赋值)
+    - ``extra`` → ``MappingProxyType``(无 ``__setitem__`` / ``pop``)
+    - 元素仍为**共享引用**:``tuple()`` 与 ``MappingProxyType`` 都不拷贝元素,
+      T-5"禁 deepcopy / 结构共享"不受影响
+    - 体积缓存置空(视图不参与记账;core 自身始终使用原快照)
+
+    用途 = 钩子调用边界:core 把只读视图交给扩展,扩展只能经返回 Action 变更状态;
+    容器级原地篡改(append/赋值/写键)抛 ``AttributeError`` / ``TypeError``。
+    注意边界:元素为共享引用(T-5 禁 deepcopy),嵌套 dict/list 仍可被原地改写 ——
+    本视图提供**容器级**防污染,非深度不可变保证(见 _SizeCache docstring 同口径)。
+    """
+    return replace(
+        snapshot,
+        history=tuple(snapshot.history),
+        messages=tuple(snapshot.messages),
+        tools=tuple(snapshot.tools),
+        extra=MappingProxyType(snapshot.extra),
+        _size_cache=None,
+    )

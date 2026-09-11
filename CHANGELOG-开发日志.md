@@ -5,6 +5,62 @@
 
 ---
 
+## 2026-09-11 综合评审修复（P0×2 + P1×6 + P2 群 + 套件假绿修复）
+
+> 来源：`docs/plans/2026-09-11-liu2深度综合评审报告.md`（3 路子评审 + 主 agent 验证）→ `docs/plans/2026-09-11-综合评审修复计划.md`（plan-verifier 审查后执行）。**协议无新增元素，VERSION 仍 v1.0.0；套件 45/45、pytest 258 passed、lints 0；P0/P1 修复全部变异验证承重（退化必红 + 还原逐字节）。** 详情见 `teage_liu2/docs/plans/开发日志.md` 顶部条目。
+
+- **P0-1**：pipeline 形态实例改**每对话新建**（原单例 `final_snapshot` 跨 session 并发互踩：after/on_error 拿错会话快照 + extra 跨会话串写）；新增跨 session 并发回归测试。
+- **P0-2**：套件用例 14/15/10/13 弱断言改精确字面量 + runner negotiation 硬校验 —— **P-1/P-2 转档证据修复**（转档评审前置条件）。
+- **P1 群**：①入口 user 消息校验移到落盘前（防超限输入污染历史库）②lifespan shutdown 重排（先排空写队列再关存储）+ 启动失败兜底清理 ③热重载回滚恢复旧扩展 bus 身份/L3 订阅 ④轮间收口 error 补 `code` ⑤H-20 schema 校验器 fail-open（畸形 schema 不炸对话）⑥`/reload` 重放 `core.max_*`。
+- **套件/覆盖**：runner 守卫上移协议类用例 + op 白名单 + `read` 接线；新增用例 `45-resource-limits`（T-8 首个套件锚定）。
+- **P2 群**：工具 duration 计时/`Union` import/日志常量化/decision 校验/tasks 时序/writer resolve/history 读锁/stdio limit/L3 deepcopy/docstring 收敛/routes 显式消费/空断言清理。
+- **契约文本 9 处**：lifecycle `lang` 勘误、events step 1-based 契约化、PENDING P-2 口径、errors/config/types/transport 措辞、CORE/INTERFACES 同步。
+
+## 2026-09-11 交叉评审剩余问题一并解决（P1-4/P1-5/P1-6/P1-8/P1-9 + P2 + 装载边界）
+
+> 来源：`docs/plans/2026-09-11-core与协议-交叉评审与修正方案.md` §9/§10（4 路子智能体 + 主 agent 复核的全部剩余项）。**协议无新增元素，VERSION 仍 v1.0.0；PENDING P-9③ 勾稽补齐。**
+
+- **P1-4 资源上限三键接线**（此前"配置静默失效"）：`core/snapshot.py` 新增 `configure_limits()` / `active_limits()`（`_ACTIVE_LIMITS` 注入，键未知/值非法保持协议默认）；`ChatPipeline(resource_limits=...)` + `server/app.py` 把 `core.max_*` 真正接入快照上限。
+- **P1-5 H-20 落地**：新增 `core/schema_check.py`（极简 JSON Schema 子集校验，**零新依赖**、未知关键字宽容）；`hooks.pre_tool_call_all` 对 modify 后的入参**重过工具 `input_schema`**，非法 → 视同策略拒绝（`TOOL_MODIFY_INVALID` 记码 + tool_result is_error 回喂）。
+- **P1-6 H-5 轮中短路**：`hooks.post_tool_call_all` / `after_step_all` 在 SetStop 后**短路后续扩展**（此前只对 before 短路）；`loop` 在 `post_tool_call` 置 stop 后**不再执行本批次剩余工具**，并以 `tool_use`+`tool_result`(is_error, `TOOL_REJECTED_BY_POLICY`) 补齐事件流与消息配对（H-19 不缺环 / 防下轮 400）。
+- **P1-8 行为套件 `inputs` 假绿**：runner 新增 `_check_unknown_extension_inputs`（`<ext>_<suffix>` 后缀白名单守卫，写错即失败）；删除 case 05 `forged_revision` / case 14 `reload_cycles` 两个被静默忽略的键；case 09 改用真正被消费的 `round_injector_inject_round`；case 10 `limits` 落实为"与协议常量比对 + 真实驱动超限拒绝"；case 12 并发上限由宽区间改为与 `INVOKE_LLM_MAX_CONCURRENCY` 逐字一致的 `4`；case 18/25 文件名与 id 对齐；删除死代码 `_find_behavior_inputs`。
+- **P1-9 文档一致性 14 处**：`INTERFACES.md`（`branches/guardrails.py` → `data2/extensions/guardrails/main.py`、17/17 → 44/44）、`docs/SUBSYSTEM-SPI.md`（`branches/audit.py` → `data2/extensions/audit/main.py`）、`PENDING.md` P-2 自相矛盾结论、`config.spec.md` 资源上限键登记口径、`PROTOCOL/README.md`（权威规格 v1.14→v1.15、将来时→完成时）、`CORE.md`（删除已消失的"装配点例外"、铁律 3、构造参数补 `session_store`/`resource_limits`）、`errors.spec.md`（6→7 常量）、`hooks.spec.md`（不绑定 `asyncio.wait_for`）、`lifecycle.spec.md`（`lang`→`language`）、`types.spec.md` T-4（扩展不提交 revision）。
+- **P2 群**：SetExtra 值**必须 JSON 可序列化**（否则快照体积记账恒判 0、上限失效）；**入口 user 消息**与扩展 AppendMessage 同一套资源上限（`snapshot_with_user_message` 由死代码转为活路径，超限 → error 事件）；`storage.query` 改为 **filters 先于 limit**（SQL `json_extract` WHERE，与 P-4 条款⑧及 Rust 后端一致）；**终止原因常量消除双源**（单一事实源 = `core/errors.py`，`types` re-export）；**`ToolDecision.reason` 补齐**（协议已定义、实现此前丢弃；reject 文案改用 reason，case 16/32 同步）；**observe 扩展的 `ToolDecision` 一律忽略**（E-9 只读约束此前只管 action）；`TaskRegistry.cancel_all` 改 **async 并等待取消完成** + 任务异常回收（此前"never retrieved"噪声）；`step.py` 的流式总超时**只包裹每次 await**（不再把 `yield` 包进 `asyncio.timeout`，避免慢消费方被误取消/漏判）。
+- **装载边界（lifecycle §3.3 机制化）**：`extension_loader.check_import_boundary` 在装载前 AST 扫描，禁止扩展入口 import `teage_liu2.server` / `teage_liu2.branches` / 老系统 `teage_liu`（该条款此前**只存在于文档**）。
+- **验证**：行为套件 **44/44**；pytest **232 → 250 passed**；`audit_liu2.ps1` **exit=0**；lints 0；**变异验证 9/9 全承重**（H-5×2 / H-20 / observe / 入口上限 / 资源上限接线 / SetExtra / query filters / import 边界，退化必红 + 还原逐字节）。新增 `tests_core/test_cross_review_fixes.py`（16 条）。**未做 git 写操作，无临时文件残留。**
+
+## 2026-09-11 core 与协议 交叉评审修正（P0-1 轮中拦截 + P1-1/2/3 事件契约 + P1-7 契约收口）
+
+> 来源：`docs/plans/2026-09-11-core与协议-交叉评审与修正方案.md`（4 路只读子智能体并行评审 + 主 agent 行号级复核）。**协议侧新增 PENDING P-9/P-10，VERSION 仍 v1.0.0（升版待与 P-1..P-8 转档一批评审）。** teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。
+
+- **P0-1（正确性）轮中 SetStop 拦截丢失**：`core/loop.py` 在 `after_step` 返回 SetStop 且本轮自然结束（end_turn）时，直接 `done(normal, is_complete=true)` —— 拦截被静默丢弃（`cur.stop` 检查原只在工具分支之后）。已补 guard → `done(intercepted)`，与 hooks H-5 一致；新增套件用例 `after-step-stop-44` 承重锚定。
+- **P1-1 tool_result 越界键 → 协议定义的 `code`**：原实现发 done 专用枚举名 `termination_reason`（ToolResultEvent `additionalProperties:false`，属越界）。改为 errors 域可选 `code`：reject → `TOOL_REJECTED_BY_POLICY`、执行异常 → `TOOL_EXEC_FAILED`（两码由"仅日志面"升级为"事件面 + 日志面"双面，三面模型①更完整）。登记 PENDING P-9。
+- **P1-2 `step_start.step` 恒 0 → 真实序号**：`StepExecutor.execute` 增 `step` 形参（默认 1），loop 传 `cur.round`、bare 传 1；schema `minimum:1` 不动（协议本来正确）。
+- **P1-3 usage 口径分裂 → 协议统一**：`StepEndEvent.usage` / `StepSummary.usage` 放宽为 `["object","null"]`，与 `DoneEvent` / `AfterResponse` 一致（provider 未上报 = null，不以 `{}` 伪装）。登记 PENDING P-10；core 零改动。
+- **P1-7 热重载 cancel_all 契约收口**：`TaskRegistry.cancel_all` 是**全局**且对扩展侧登记任务只清登记表（宿主无法终止扩展进程内任务）——L-4/T-4 原承诺的"热重载兜底取消"既会误杀新链任务、又语义不成立。按 liu2"扩展自持 / 主干最小"定案改为**改协议文本**：取消执行责任在扩展 teardown，`cancel_all` 兜底仅限宿主整体 shutdown；`core/tasks.py` docstring 与 `registry.rebuild` 注释同步。
+- **验证**：行为套件 **43 → 44/44**；pytest **226 → 232 passed**；`audit_liu2.ps1` **exit=0**；lints 0；**变异验证 6 项全承重**（P0-1 guard / P1-1 code ×2 / P1-2 step ×2 / P1-3 schema，退化必红、还原逐字节完好）。**未做 git 写操作。**
+
+## 2026-09-11 T-3 边界只读视图 + WP-E·E1/E4 routes 锚定（M3 收尾）
+
+> 来源：`docs/plans/2026-09-11-三项待裁决分析.md` §6；用户裁决「T-3 采用边界只读，防止误用」「WP 按推荐」。**PROTOCOL v1.0.0 冻结面未动（仅实现 T-3 既有契约），不升 VERSION。** teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。
+
+- **T-3 / H-17 边界只读视图（S2）**：`core/types.py` 新增 `readonly_view(snapshot)`（`messages`/`tools`/`history` → `tuple`、`extra` → `MappingProxyType`，元素共享引用、不 deepcopy）；`core/hooks.py` 对**全部面向扩展的 9 处钩子调用**（build_injections / inject_round / before / pre_tool_call / on_tool_call / post_tool_call / after_step / after / on_error）统一改传只读视图，core 自身仍用原快照。**H-17 由"缺口"转"已修复"**（`CORE-缺口记录.md`）；套件 `hooks-readonly-31` 由"如实锚定篡改生效"收紧为 `messages_roles=[user]`；`test_snapshot_identity.py` 新增 2 条。
+- **WP-E·E1 routes 生产修复锚定**：新增 `tests_core/test_server_routes.py`（`server/` **首次有测试锚定**）——`/chat` 拦截取 `done.response`、`/chat/stream` 不提前关闭生成器（终态 `after` 仍触发）、`/sessions/{id}/messages` 的 `before_id` 游标分页、`/reload` 返回**分支名字符串**（Branch 实例 → 500）。夹具 = 假 `LLMClient` + 临时库 + 临时 `extensions_root`/`config.yaml`。
+- **WP-E·E4 L-11 路由层真并发**：同一 session 两个并发 `/chat` 经路由层 session 锁串行化（确定性：第一个请求持锁阻塞，第二个必须等）；删掉 `async with lock` 即变红。
+- **变异验证**：T-3 去边界包装 → 用例 31 + 单测红；E1/E4 批量退化 5 处 → 5 用例全红且报错信息准确；恢复后 `routes.py` 与 HEAD 逐字节一致（`git diff` 空）。
+- **验证**：行为套件 **43/43**；pytest **221 → 226 passed**；`scripts/audit_liu2.ps1` **exit=0**；lints 0。**未做 git 写操作。**
+
+## 2026-09-11 三项待裁决落地（CI 依赖放行 + L-11 边界修复 + LLM_CANCELED 事件面锚定）
+
+> 来源：`docs/plans/2026-09-11-三项待裁决分析.md`。**PROTOCOL v1.0.0 冻结面未动，不升 VERSION。** teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。
+
+- **CI 依赖放行（WP-E 步骤 0）**：`.github/workflows/liu2-audit.yml` 装机行追加 `fastapi httpx`（用户 2026-09-11 批准）。原方案 C"不经 FastAPI"被证**不成立** —— `server/routes.py:9-10` 与 `app.py:16-18` 均**模块级** import fastapi，import routes 即需要它；头注释同步写明"覆盖被测试模块的模块级 import 全集"原则（与 `python-dotenv` 同款）。
+- **L-11 会话锁边界漏洞修复**：`server/session_locks.py` 超限淘汰时**跳过本次刚返回的锁**（此前会把刚拿到的锁淘汰 → 同 session 两次 `get` 拿到两把不同锁、互斥失效，`break`"临时超限"分支不可达）；`tests_core/test_session_locks.py` 更新受影响用例并新增 `test_just_returned_lock_not_evicted` 边界用例。
+- **LLM_CANCELED 归位事件面**：`error-codes-20` 增 `LLM_CANCELED` 场景 + `must_include`；runner 的 `_run_error_code_matrix` 改为汇总各场景 `error` 事件 `code` 并经 `custom:error_matrix` 锚定**事件面①**（此前该用例事件面通道为空、LLM_* 仅靠日志面侥幸通过；LLM_CANCELED 为 info 级不入 ②，故只走事件面）。套件错误码并集 **12 → 13**。PENDING P-8 条件②、`PROTOCOL/README.md` 同步。
+- **条款覆盖登记**：协议收口计划 §0/§13 回写 6 条（T-3/T-5/L-5/L-6/L-10/L-11）的锚定文件与**限定语**（T-3/L-11/L-10 为带限定的部分覆盖，不得洗白为全闭合）。
+- **变异验证**：①事件面退化（`event_codes` 置空）→ `error-codes-20` 变红（LLM_CANCELED 未出现）；②去掉"刚返回锁不淘汰"防线 → 会话锁 2 条变红（复现"同 session 两把锁"）；恢复后全绿。
+- **验证**：行为套件 **43/43**；pytest **219 passed**（218 + 1）；`scripts/audit_liu2.ps1` **exit=0**；lints 0。**未做 git 写操作。**
+
 ## 2026-09-11 「部分落实」项统一落地（协议债收口 + 测试锚定）
 
 > 来源：`docs/plans/2026-09-11-部分落实项统一落地审查.md`。**PROTOCOL v1.0.0 冻结面未动，不升 VERSION。** teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。

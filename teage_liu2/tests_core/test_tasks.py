@@ -29,11 +29,9 @@ def test_create_and_cancel_all():
         assert tr.count == 2
         await asyncio.sleep(0)  # 让任务启动进入 sleep(30)(真实场景:运行中取消)
 
-        tr.cancel_all()
+        await tr.cancel_all()  # 2026-09-11:cancel_all 改 async 且等待取消完成
         assert tr.count == 0
-        # 等待取消传播到任务(任务内 except CancelledError 执行)
-        await asyncio.gather(t1, t2, return_exceptions=True)
-        assert sorted(cancelled) == ["t1", "t2"]
+        assert sorted(cancelled) == ["t1", "t2"], "cancel_all 返回时取消必须已传播"
         assert t1.cancelled() and t2.cancelled()
 
     asyncio.run(main())
@@ -55,8 +53,8 @@ def test_cancel_all_idempotent():
     async def main():
         tr = TaskRegistry()
         tr.create_task(asyncio.sleep(30))
-        tr.cancel_all()
-        tr.cancel_all()  # 幂等,不崩
+        await tr.cancel_all()
+        await tr.cancel_all()  # 幂等,不崩
         assert tr.count == 0
 
     asyncio.run(main())

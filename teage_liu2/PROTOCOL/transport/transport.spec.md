@@ -26,9 +26,9 @@
 `invoke_hook / invoke_tool / invoke_llm / storage_write / storage_read / storage_query / storage_delete / task_register / task_cancel / event / heartbeat / shutdown`
 
 **行为条款 T-1（event = L3 观测通知）**: `event` 消息类型 = 事件流 L3 观测通知（异步批处理，非 L1 热路径透传）。
-**行为条款 T-2（storage_* = 宿主存储唯一通道）**: payload 含 kind + 数据，kind 必须带 `{extension_name}.` 前缀且 extension_name 匹配 `^[a-z0-9_]+$`，非法前缀拒绝（schema 级校验）。
+**行为条款 T-2（storage_* = 宿主存储唯一通道）**: payload 含 kind + 数据，kind 必须带 `{extension_name}.` 前缀且 extension_name 匹配 `^[a-z0-9_]+$`，非法前缀拒绝（**宿主消息层运行时校验**——storage.schema 的 kind pattern 仅约束字符集 `^[a-z0-9_.]+$`，per-extension 前缀隔离由宿主 TransportBus 消息层强制，2026-09-11 措辞修正）。
 **行为条款 T-3（invoke_llm = 扩展调 LLM 唯一通道）**: payload 含 role/messages；走 LLMAdapter 直调，协议级防重入（不进钩子链）。
-**行为条款 T-4（task_* = 后台任务通道）**: payload = `{task_id, description}`（task_cancel = `{task_id}`）；后台任务归属扩展进程——宿主只登记（可观测/取消协调），不承载执行；扩展 teardown 时自取消其任务，宿主 shutdown 与热重载重建时 cancel_all 兜底。
+**行为条款 T-4（task_* = 后台任务通道）**: payload = `{task_id, description}`（task_cancel = `{task_id}`）；后台任务归属扩展进程——宿主只登记（可观测/取消协调），不承载执行；**取消的执行责任在扩展自身**（teardown 内自取消；`task_cancel` 仅为协调信号，宿主无法终止扩展进程内任务）。宿主侧任务的 `cancel_all` 兜底**仅在宿主整体 shutdown**执行——**热重载重建不执行全局 `cancel_all`**（`TaskRegistry` 无链粒度，会误取消新链刚注册的任务；旧链任务由旧扩展 teardown 自取消）。
 **行为条款 T-5（invoke_tool vs invoke_hook 分工）**: `invoke_hook` 为通用钩子调用（参数 = Invocation{hook, snapshot, args}，返回 ActionResult）；`invoke_tool` 为工具执行专用消息（payload 仅 name+input，**免快照序列化**），语义 = 扩展声明 `capabilities: [..., "tool_executor"]` 时 core 派发工具的首选通道；未声明 tool_executor 的扩展，工具执行退化为 invoke_hook(on_tool_call)；两种路径结果等价，仅传输开销不同。
 **错误响应面（2026-09-10 登记）**: 宿主对入站消息的失败响应形如 `{error: {code, message}}`，其 `code` 取自 **errors 域的小写子命名空间**（`invalid_frame` / `unknown_message_type` / `invalid_payload` / `kind_prefix_violation` / `capability_not_declared` / `unavailable` / `storage_failed` / `llm_call_failed` / `task_rejected` / `internal_error`），完整定义与枚举见 `errors.spec.md` §5.1 与 `errors.schema.json#/definitions/TransportErrorCode`。
 

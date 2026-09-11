@@ -9,6 +9,7 @@ manifest.yaml 是扩展的安装态唯一事实源(身份/装载方式/capabilit
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import logging
@@ -183,6 +184,51 @@ def discover_extensions(root: Path) -> Tuple[Dict[str, ExtensionSpec], Dict[str,
     return specs, errors
 
 
+#: 扩展入口禁止 import 的模块前缀（lifecycle §3.3 import 边界）
+_FORBIDDEN_IMPORT_MODULES = ("teage_liu", "teage_liu2.server", "teage_liu2.branches")
+
+
+def _is_forbidden_import(name: str) -> bool:
+    if not name:
+        return False
+    return any(
+        name == module or name.startswith(module + ".")
+        for module in _FORBIDDEN_IMPORT_MODULES
+    )
+
+
+def check_import_boundary(spec: ExtensionSpec, entry_path: Path) -> None:
+    """装帧时校验扩展入口的 import 边界（lifecycle §3.3）。
+
+    2026-09-11 交叉评审：该条款此前**只存在于文档**（零机制保障，同进程扩展
+    本可绕开）。现于装载前用 AST 扫描 import —— 禁止触达外壳
+    （``teage_liu2.server``）、其他枝干（``teage_liu2.branches``）与老系统
+    （``teage_liu``）；``teage_liu2.core`` 公开契约、标准库与第三方不受限。
+    """
+    try:
+        source = entry_path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise ValueError(f"扩展 {spec.name!r} 入口不可读(import 边界校验): {e}") from e
+    try:
+        tree = ast.parse(source, filename=str(entry_path))
+    except SyntaxError as e:
+        raise ValueError(f"扩展 {spec.name!r} 入口语法错误: {e}") from e
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            # level > 0 = 包内相对导入(扩展自身子模块),允许
+            names = [node.module or ""] if not node.level else []
+        else:
+            continue
+        for name in names:
+            if _is_forbidden_import(name):
+                raise ValueError(
+                    f"扩展 {spec.name!r} 入口违反 import 边界(lifecycle §3.3):"
+                    f" 禁止 import {name!r}（不得触达外壳/其他枝干/老系统）"
+                )
+
+
 def load_python_extension(spec: ExtensionSpec, config: dict) -> Branch:
     """动态装载 language=python 扩展入口 → create_branch(config) → Branch。
 
@@ -195,6 +241,7 @@ def load_python_extension(spec: ExtensionSpec, config: dict) -> Branch:
     module = sys.modules.get(module_name)
     if module is None:
         entry_path = Path(spec.path) / (spec.entry or "")
+        check_import_boundary(spec, entry_path)
         import_spec = importlib.util.spec_from_file_location(module_name, entry_path)
         if import_spec is None or import_spec.loader is None:
             raise ValueError(f"扩展 {spec.name!r} 无法创建模块加载器: {entry_path}")

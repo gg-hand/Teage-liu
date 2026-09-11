@@ -8,6 +8,12 @@ name: liu2 audit
 #                   套件用例 21 都会 import 它,缺则 pytest 与套件双双失败)
 #   jsonschema    ← requirements.txt:13 已声明(供套件用例 schema 校验)
 #   pytest        ← 契约测试
+#   fastapi       ← server/app.py:16、server/routes.py:9(模块级 import;只要
+#                   import teage_liu2.server 就需要它)
+#   httpx         ← fastapi.testclient.TestClient 的运行时依赖(WP-E 的
+#                   tests_core/test_server_routes.py 用它锚定 routes)
+# 二者均已在 requirements.txt/pyproject.toml 声明,与 python-dotenv 同理:
+# 被测试模块的"模块级 import 全集"必须可满足,否则 CI 收集期即 ImportError。
 
 on:
   push:
@@ -45,7 +51,7 @@ jobs:
       - name: Install minimal deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest pyyaml jsonschema python-dotenv
+          python -m pip install pytest pyyaml jsonschema python-dotenv fastapi httpx
 
       - name: Protocol behavior suite (teage_liu2/PROTOCOL/behavior-suite)
         run: python teage_liu2/PROTOCOL/behavior-suite/runner.py

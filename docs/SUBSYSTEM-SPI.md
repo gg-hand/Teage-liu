@@ -343,7 +343,7 @@ class EnvironmentBranch(Branch):
 ### 13.1 观测枝干示例:audit(observe 只读,M2 首个实验性扩展,2026-08-21 已落地)
 
 ```python
-# branches/audit.py(完整实现见仓库;此处展示关键形态)
+# data2/extensions/audit/main.py(完整实现见仓库;此处展示关键形态)
 class AuditBranch(Branch):
     name = "audit"
     capabilities = ["observe"]          # 只读约束:钩子返回 action 一律忽略

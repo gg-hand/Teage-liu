@@ -45,7 +45,7 @@ history / system_text / messages / tools / extra / stop / revision
 ```
 
 **行为条款 T-3（不可变只读）**: 快照对扩展呈现为不可变只读视图；扩展不得修改快照本身，只能通过返回 Action 变更。
-**行为条款 T-4（快照递增）**: `revision` 为快照版本号，由 host 独占递增——每次 action 批次应用后 +1；扩展只读，扩展提交的 revision 非法值一律拒绝（§15-A1 协议边界校验）。round（第几轮 LLM 调用）与 revision（快照第几个版本）不同源。
+**行为条款 T-4（快照递增）**: `revision` 为快照版本号，由 host **独占**递增——每次 action 批次应用后 +1；扩展**只读**，且协议**不存在**扩展提交 revision 的通道（Action 不携带 revision）。伪造防线 = ① host 独占推进（扩展无法回写）② transport delta 帧的 `base_revision` 校验（不匹配 → 请求 `full` 重发，见 transport 域）。round（第几轮 LLM 调用）与 revision（快照第几个版本）不同源。
 **行为条款 T-5（结构共享）**: 宿主实现禁止对快照做 `deepcopy`；采用 O(n) 浅拷贝 + 尾部追加 + 共享元素引用（v1.0 落地形态），传输层 delta 是传输内部重组，协议对扩展永远呈现完整快照。
 
 ## 5. 命名约束（协议强制，防注入）
@@ -64,7 +64,7 @@ history / system_text / messages / tools / extra / stop / revision
 
 ## 7. 资源上限阈值（§15-A6，v1.0.0 定案）
 
-宿主实现**必须**实施以下上限，不可无界（防 DoS）。阈值具体数值为协议常量，进 `types.schema.json` 的 `ResourceLimits`：
+宿主实现**必须**实施以下上限，不可无界（防 DoS）。阈值具体数值为**协议默认值**（进 `types.schema.json` 的 `ResourceLimits`，`const` 语义 = 缺省值；宿主可经 config `core.max_*` **收紧**，不可放宽拒绝语义，2026-09-11 注明）：
 
 | 上限 | 数值 | 语义 |
 |---|---|---|

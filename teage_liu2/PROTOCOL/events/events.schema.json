@@ -51,7 +51,7 @@
         "session_id": { "type": "string" },
         "content_blocks": { "type": "array", "items": { "type": "object" } },
         "stop_reason": { "type": "string" },
-        "usage": { "type": "object" }
+        "usage": { "type": ["object", "null"] }
       },
       "required": ["type", "session_id", "content_blocks", "stop_reason", "usage"],
       "additionalProperties": false
@@ -78,7 +78,8 @@
         "tool_use_id": { "type": "string" },
         "result": { "type": "string" },
         "is_error": { "type": "boolean" },
-        "modified": { "type": "boolean" }
+        "modified": { "type": "boolean" },
+        "code": { "type": "string" }
       },
       "required": ["type", "session_id", "name", "tool_use_id", "result", "is_error"],
       "additionalProperties": false
@@ -129,7 +130,7 @@
         "text": { "type": "string" },
         "content_blocks": { "type": "array", "items": { "type": "object" } },
         "tool_uses": { "type": "array", "items": { "type": "object" } },
-        "usage": { "type": "object" },
+        "usage": { "type": ["object", "null"] },
         "duration": { "type": "number" }
       },
       "required": ["round", "text", "content_blocks", "tool_uses", "usage", "duration"],

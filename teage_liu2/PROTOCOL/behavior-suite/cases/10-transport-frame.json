@@ -27,13 +27,15 @@
       {
         "type": "custom:frame_result",
         "payload": {
-          "valid_full_decoded": { "type": "boolean" },
-          "invalid_type_rejected": { "type": "boolean" },
-          "invalid_encoding_rejected": { "type": "boolean" },
-          "invalid_json_rejected": { "type": "boolean" },
-          "missing_fields_rejected": { "type": "boolean" },
-          "delta_valid_decoded": { "type": "boolean" },
-          "delta_bad_revision_rejected": { "type": "boolean" }
+          "valid_full_decoded": true,
+          "invalid_type_rejected": true,
+          "invalid_encoding_rejected": true,
+          "invalid_json_rejected": true,
+          "missing_fields_rejected": true,
+          "delta_valid_decoded": true,
+          "delta_bad_revision_rejected": true,
+          "limits_match_protocol": true,
+          "frame_limit_enforced": true
         }
       }
     ],

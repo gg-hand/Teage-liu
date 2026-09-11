@@ -228,42 +228,70 @@ def create_app(
         event_stream=event_stream,
         # §5 L-10 会话态 extra 会话内延续:构建恢复/结束写回 SessionStore
         session_store=session_store,
+        # P1-4(2026-09-11):core.max_* 三键此前只解析不生效,现接线到快照上限
+        resource_limits={
+            "max_snapshot_bytes": core_config.max_snapshot_bytes,
+            "max_message_bytes": core_config.max_message_bytes,
+            "max_messages_per_conversation": core_config.max_messages_per_conversation,
+        },
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # P2(2026-09-11 综合评审):统一清理闭包 —— 正常关闭与**启动段失败**
+        # 共用(yield 前抛错时 yield 后的清理不会执行,旧实现会孤儿化已 spawn
+        # 的扩展子进程与已打开的存储连接)
+        async def _teardown_all_resources() -> None:
+            # L1 shutdown 幂等编排(P1-2 重排,2026-09-11 综合评审):
+            # ① registry.shutdown 仅 cancel_all + teardown(存储 close 传 None 跳过)
+            # ② storage_writer.close() 先排空写队列 —— 此时存储连接仍开,teardown
+            #    期间扩展冲刷写与尾部残余写全部落盘(旧顺序"先关存储后排空"会把
+            #    这些写全部打在已关闭连接上 → shutdown 窗口内消息/审计必丢)
+            # ③ 再关存储(message_store / storage_provider)
+            # ④ supervisor 关扩展进程 ⑤ L3 / LLM
+            await registry.shutdown(
+                task_registry=task_registry,
+                message_store=None,
+                storage_provider=None,
+            )
+            try:
+                storage_writer.close()
+            except Exception as e:
+                logger.warning("关闭 StorageWriter 失败: %s", e)
+            try:
+                history_store.close()
+            except Exception as e:
+                logger.warning("关闭历史存储失败: %s", e)
+            try:
+                storage_provider.close()
+            except Exception as e:
+                logger.warning("关闭存储平台失败: %s", e)
+            try:
+                await supervisor.shutdown()
+            except Exception as e:
+                logger.warning("关闭扩展进程失败: %s", e)
+            try:
+                await l3_sink.close()
+            except Exception as e:
+                logger.warning("关闭 L3 旁路失败: %s", e)
+            try:
+                llm_client.close()
+            except Exception as e:
+                logger.warning("关闭 LLM 客户端失败: %s", e)
+
         # ① spawn 扩展进程(stdio 握手互报 protocol_version;失败抛 = 启动失败)
-        await supervisor.launch_all(cfg)
-        # ② setup 全部枝干/扩展(失败抛 = 启动失败;E1 逆序回滚)
-        #    host = 纯数据宿主能力声明(kind 前缀按扩展名构造)
-        await registry.setup_all(cfg, host_builder=build_host_declaration)
+        try:
+            await supervisor.launch_all(cfg)
+            # ② setup 全部枝干/扩展(失败抛 = 启动失败;E1 逆序回滚)
+            #    host = 纯数据宿主能力声明(kind 前缀按扩展名构造)
+            await registry.setup_all(cfg, host_builder=build_host_declaration)
+        except Exception:
+            logger.exception("启动失败,执行资源清理(防孤儿进程/句柄)")
+            await _teardown_all_resources()
+            raise
         logger.info("teage_liu2 启动完成: %d 个枝干注册", len(registry.entries))
         yield
-        # L1 shutdown 幂等编排:①TaskRegistry ②teardown 逆序 ③④storage close
-        # 扩展进程时序:先 registry.shutdown(经协议通知扩展 teardown,进程仍存活可
-        # 处理)→ 再 supervisor 关闭进程(shutdown 帧 + 终止兜底)
-        await registry.shutdown(
-            task_registry=task_registry,
-            message_store=history_store,
-            storage_provider=storage_provider,
-        )
-        try:
-            await supervisor.shutdown()
-        except Exception as e:
-            logger.warning("关闭扩展进程失败: %s", e)
-        try:
-            await l3_sink.close()
-        except Exception as e:
-            logger.warning("关闭 L3 旁路失败: %s", e)
-        # StorageWriter 排空写队列后停止写线程(队列中残余写全部执行完)
-        try:
-            storage_writer.close()
-        except Exception as e:
-            logger.warning("关闭 StorageWriter 失败: %s", e)
-        try:
-            llm_client.close()
-        except Exception as e:
-            logger.warning("关闭 LLM 客户端失败: %s", e)
+        await _teardown_all_resources()
 
     # 5. FastAPI 实例
     app = FastAPI(

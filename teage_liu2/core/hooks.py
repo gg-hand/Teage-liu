@@ -33,7 +33,8 @@ from .errors import (
 )
 from .injection import Injection, _dedupe_by_key
 from .snapshot import apply_action_batch
-from .types import Snapshot, StepSummary
+from .schema_check import tool_input_schema, validate_against_schema
+from .types import Snapshot, StepSummary, readonly_view
 
 logger = logging.getLogger(__name__)
 
@@ -281,8 +282,9 @@ class HookChain:
     async def build_injections_all(self, snapshot: Snapshot) -> List[Injection]:
         """收集全部枝干的注入声明(注册序)。"""
         result: List[Injection] = []
+        view = readonly_view(snapshot)  # T-3/H-17:交给扩展的一律是只读视图
         for branch in self._branches:
-            items = await self._call(branch, "build_injections", snapshot)
+            items = await self._call(branch, "build_injections", view)
             if items:
                 result.extend(items)
         return result
@@ -295,8 +297,9 @@ class HookChain:
         语义变更(§17):现状"首个非空返回" → 全收集合并。
         """
         result: List[Injection] = []
+        view = readonly_view(snapshot)  # T-3/H-17:交给扩展的一律是只读视图
         for branch in self._branches:
-            item = await self._call(branch, "inject_round", snapshot)
+            item = await self._call(branch, "inject_round", view)
             if item is not None:
                 result.append(item)
         return _dedupe_by_key(result)
@@ -315,7 +318,7 @@ class HookChain:
         """
         cur = snapshot
         for branch in self._branches:
-            actions = await self._call(branch, "before", cur)
+            actions = await self._call(branch, "before", readonly_view(cur))
             if not actions:
                 continue
             if self._is_observe(branch):
@@ -334,11 +337,23 @@ class HookChain:
 
         返回 (最终决策, effective_input)。allow 不短路;modify 的 input 作为
         实际执行输入传给后续 pre_tool_call 与 on_tool_call(应用序后覆盖先)。
+
+        - observe 扩展(E-9 只读约束)的决策一律忽略并记录（2026-09-11 交叉评审：
+          此前只忽略 action，ToolDecision 仍可生效 → 只读观测面能影响工具执行）；
+        - H-20：modify 后的入参**重过工具 input_schema**，非法 → 视同策略拒绝。
         """
         cur_input: Dict[str, Any] = dict(input) if isinstance(input, dict) else input
+        modified = False
+        view = readonly_view(snapshot)  # T-3/H-17
         for branch in self._branches:
-            decision = await self._call(branch, "pre_tool_call", snapshot, name, cur_input)
+            decision = await self._call(branch, "pre_tool_call", view, name, cur_input)
             if decision is None:
+                continue
+            if self._is_observe(branch):
+                logger.error(
+                    "%s: observe 扩展 %s 的 pre_tool_call 决策被忽略(只读约束)",
+                    HOOK_TERMINAL_ACTION_IGNORED, branch.name,
+                )
                 continue
             if not isinstance(decision, ToolDecision):
                 logger.error(
@@ -350,6 +365,7 @@ class HookChain:
                 return decision, cur_input
             if decision.is_modify and decision.input is not None:
                 cur_input = decision.input
+                modified = True
             elif decision.is_modify:
                 # P-8 ⑤(2026-09-11 WP-C):modify 但 input 为 None 是非法组合,
                 # 此前静默忽略(无 else 分支)→ 现记码并降级 allow(不中断对话)
@@ -357,6 +373,37 @@ class HookChain:
                     "%s: 枝干 %s 的 pre_tool_call 返回 modify 但 input 为 %r,按 allow 处理",
                     TOOL_MODIFY_INVALID, branch.name, decision.input,
                 )
+        # H-20(2026-09-11 交叉评审落地):修改后的入参重过工具 input_schema,
+        # 非法 → 视同策略拒绝(tool_rejected),不把非法入参送进工具执行
+        if modified:
+            schema = tool_input_schema(getattr(snapshot, "tools", None), name)
+            if isinstance(schema, dict):
+                try:
+                    problem = validate_against_schema(cur_input, schema)
+                except (TypeError, ValueError, KeyError, RecursionError) as e:
+                    # P1-5(2026-09-11 综合评审):schema 来自扩展(SetTools/工具注册,
+                    # 内容不做校验)—— 畸形 schema(如 minLength:"3"、minimum:[])
+                    # 或超深嵌套会让校验器自身抛异常并击穿请求路径,违反
+                    # "单扩展故障不杀死对话"。校验器只做"否定证据",自身失能时
+                    # fail-open(放行原输入),错误可见(记码)不静默。
+                    logger.error(
+                        "%s: 工具 %s 的 input_schema 校验器异常(%s),按 allow 放行原输入",
+                        TOOL_MODIFY_INVALID, name, e,
+                    )
+                    problem = None
+                if problem:
+                    logger.error(
+                        "%s: 枝干 modify 后入参不符合工具 %s 的 input_schema(%s),视同策略拒绝",
+                        TOOL_MODIFY_INVALID, name, problem,
+                    )
+                    return (
+                        ToolDecision(
+                            decision="reject",
+                            input=cur_input,
+                            reason=f"modify 后入参不符合工具 schema: {problem}",
+                        ),
+                        cur_input,
+                    )
         return ToolDecision(decision="allow", input=cur_input), cur_input
 
     async def dispatch_tool_call(
@@ -373,6 +420,7 @@ class HookChain:
         枝干异常 → 捕获并返回异常实例(loop 转 tool_result is_error 回喂 LLM,
         单枝干故障不杀死对话;§8 责任矩阵 TOOL_EXEC_FAILED)。
         """
+        view = readonly_view(snapshot)  # T-3/H-17
         for branch in self._branches:
             try:
                 if (
@@ -381,7 +429,7 @@ class HookChain:
                 ):
                     result = await branch.invoke_tool(tool_name, tool_input)
                 else:
-                    result = await branch.on_tool_call(snapshot, tool_name, tool_input)
+                    result = await branch.on_tool_call(view, tool_name, tool_input)
             except Exception as e:
                 # P-8 ⑤(2026-09-11 WP-C):补 CODE: 前缀(§errors §5 日志面)
                 logger.error(
@@ -405,7 +453,7 @@ class HookChain:
         cur = snapshot
         for branch in self._branches:
             actions = await self._call(
-                branch, "post_tool_call", cur, name, input, result, duration
+                branch, "post_tool_call", readonly_view(cur), name, input, result, duration
             )
             if not actions:
                 continue
@@ -413,6 +461,12 @@ class HookChain:
                 self._log_observe_action(branch, "post_tool_call", actions)
                 continue
             cur, _ = apply_action_batch(cur, actions)
+            if cur.stop:
+                # H-5(2026-09-11 交叉评审):SetStop 短路后续扩展的同名钩子调用
+                logger.info(
+                    "枝干 %s SetStop,轮中短路后续扩展(%s)", branch.name, cur.stop_reason
+                )
+                break
         return cur
 
     async def after_step_all(
@@ -421,13 +475,19 @@ class HookChain:
         """after_step 链(注册序,action 立即应用):返回最新快照。"""
         cur = snapshot
         for branch in self._branches:
-            actions = await self._call(branch, "after_step", cur, summary)
+            actions = await self._call(branch, "after_step", readonly_view(cur), summary)
             if not actions:
                 continue
             if self._is_observe(branch):
                 self._log_observe_action(branch, "after_step", actions)
                 continue
             cur, _ = apply_action_batch(cur, actions)
+            if cur.stop:
+                # H-5(2026-09-11 交叉评审):SetStop 短路后续扩展的同名钩子调用
+                logger.info(
+                    "枝干 %s SetStop,轮中短路后续扩展(%s)", branch.name, cur.stop_reason
+                )
+                break
         return cur
 
     async def after_all(self, snapshot: Snapshot, response: Any) -> None:
@@ -436,22 +496,26 @@ class HookChain:
         HOOK_TERMINAL_ACTION_IGNORED —— 对话已结束、done 已定型、落盘已完成,
         不存在 action 的接收方。数据写入经 storage 消息通道。
         """
+        view = readonly_view(snapshot)  # T-3/H-17
         for branch in reversed(self._branches):
-            actions = await self._call(branch, "after", snapshot, response)
+            actions = await self._call(branch, "after", view, response)
             if actions:
+                # P2(2026-09-11 综合评审):日志面锚定依赖 `CODE: ` 前缀字面量,
+                # 必须经常量插值 —— 常量值调整时字面量会漂移
                 logger.error(
-                    "HOOK_TERMINAL_ACTION_IGNORED: 枝干 %s 的 after 返回 "
+                    "%s: 枝干 %s 的 after 返回 "
                     "%d 个 action,终态钩子 action 一律忽略",
-                    branch.name, len(actions),
+                    HOOK_TERMINAL_ACTION_IGNORED, branch.name, len(actions),
                 )
 
     async def on_error_all(self, snapshot: Snapshot, error: Any) -> None:
         """on_error 钩子(逆序,终态):返回的 Action[] 一律忽略 + 记录(§5)。"""
+        view = readonly_view(snapshot)  # T-3/H-17
         for branch in reversed(self._branches):
-            actions = await self._call(branch, "on_error", snapshot, error)
+            actions = await self._call(branch, "on_error", view, error)
             if actions:
                 logger.error(
-                    "HOOK_TERMINAL_ACTION_IGNORED: 枝干 %s 的 on_error 返回 "
+                    "%s: 枝干 %s 的 on_error 返回 "
                     "%d 个 action,终态钩子 action 一律忽略",
-                    branch.name, len(actions),
+                    HOOK_TERMINAL_ACTION_IGNORED, branch.name, len(actions),
                 )

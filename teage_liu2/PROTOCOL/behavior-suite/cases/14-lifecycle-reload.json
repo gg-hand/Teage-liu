@@ -16,20 +16,16 @@
   },
   "inputs": {
     "session_id": "s-14",
-    "user_input": "热重载生命周期测试",
-    "reload_cycles": [
-      { "config_change": "add_extension_b", "expect_success": true },
-      { "config_change": "setup_failure", "expect_success": false }
-    ]
+    "user_input": "热重载生命周期测试"
   },
   "expected": {
     "event_stream": [
       {
         "type": "custom:reload_result",
         "payload": {
-          "reload_success_entries": { "type": "integer" },
-          "rollback_preserved_old_chain": { "type": "boolean" },
-          "setup_idempotent_reentrant": { "type": "boolean" }
+          "reload_success_entries": 1,
+          "rollback_preserved_old_chain": true,
+          "setup_idempotent_reentrant": true
         }
       }
     ],

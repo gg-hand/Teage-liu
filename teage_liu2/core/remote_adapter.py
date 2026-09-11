@@ -188,7 +188,21 @@ class RemoteBranchAdapter(Branch):
             "pre_tool_call", snapshot=snapshot, args={"name": name, "input": input}
         )
         decision = result.get("decision", "allow")
-        return ToolDecision(decision=decision, input=result.get("input"))
+        # P2(2026-09-11 综合评审):非法 decision 值(如 "garbage")此前未校验,
+        # 会构造出非 allow/reject/modify 的 ToolDecision,下游只查类型不查值 →
+        # 静默按 allow 执行。此处降级 allow 并记 error(可见不静默)。
+        if decision not in ("allow", "reject", "modify"):
+            logger.error(
+                "扩展 %s 的 pre_tool_call 返回非法 decision %r,按 allow 降级",
+                self.name, decision,
+            )
+            decision = "allow"
+        # reason:hooks.schema.json ToolDecision.reason(2026-09-11 补齐透传)
+        return ToolDecision(
+            decision=decision,
+            input=result.get("input"),
+            reason=result.get("reason"),
+        )
 
     async def on_tool_call(
         self, snapshot: Snapshot, name: str, input: dict

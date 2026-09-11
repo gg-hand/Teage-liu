@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -38,6 +39,7 @@ from .injection import Injection
 from .llm import LLMClient
 from .loop import ReactLoop
 from .modes import MODE_BARE, MODE_LOOP, BareMode
+from .snapshot import configure_limits, snapshot_with_user_message
 from .step import StepExecutor
 from .types import (
     EV_DONE,
@@ -78,6 +80,7 @@ class ChatPipeline:
         storage_writer: Optional[Any] = None,
         event_stream: Optional[EventStream] = None,
         session_store: Optional[Any] = None,
+        resource_limits: Optional[Dict[str, int]] = None,
     ) -> None:
         self.llm_client = llm_client
         self.history_store = history_store
@@ -98,18 +101,36 @@ class ChatPipeline:
         # StorageWriter 异步单写者(§18.1):全部 SQLite 写经写队列,
         # 根治同步落盘阻塞事件循环;None = 兼容同步直写(旧调用方/测试)
         self.storage_writer = storage_writer
+        # 资源上限接线(P1-4,2026-09-11 交叉评审):core.max_snapshot_bytes /
+        # max_message_bytes / max_messages_per_conversation 此前只解析不生效
+        if resource_limits is not None:
+            configure_limits(resource_limits)
         self.step = StepExecutor(llm_client)
-        # E6:形态实例字典(bare/loop;新形态 = 新类 + 一行注册);
-        # 未知 mode 构造即失败(启动失败,非运行时崩溃,Q8 根治)
-        mode_instances = {
-            MODE_BARE: BareMode(self.step),
-            MODE_LOOP: ReactLoop(llm_client, self.hooks, max_loops=max_loops),
-        }
-        if mode not in mode_instances:
+        # P0-1(2026-09-11 综合评审):形态实例改为**每对话新建**(见
+        # _make_mode_instance)——此前构造一次跨对话复用,final_snapshot 是共享
+        # 可变字段,不同 session 并发时互相覆写(观测钩子拿错会话快照 /
+        # extra 跨会话串写)。未知 mode 仍在构造期校验(Q8:启动失败非运行时崩溃)。
+        if mode not in (MODE_BARE, MODE_LOOP):
             raise ValueError(
-                f"未知形态: {mode!r}(可选: {', '.join(sorted(mode_instances))})"
+                f"未知形态: {mode!r}(可选: {MODE_BARE}, {MODE_LOOP})"
             )
-        self._mode_instance = mode_instances[mode]
+        self.max_loops = max_loops
+
+    def _make_mode_instance(self) -> Any:
+        """每对话新建形态实例(P0-1,2026-09-11 综合评审)。
+
+        ReactLoop/BareMode 的 ``final_snapshot`` 是实例字段:实例跨对话复用时,
+        不同 session 并发对话会互踩该字段 —— A 会话 await LLM 期间 B 覆写,
+        A 收尾时 after/on_error 拿到 B 的终态快照、且把 B 的 extra 写进 A 的
+        SessionStore。新实例生命周期 = 单次对话,天然隔离。
+        """
+        if self.mode == MODE_BARE:
+            return BareMode(self.step)
+        if self.mode == MODE_LOOP:
+            return ReactLoop(self.llm_client, self.hooks, max_loops=self.max_loops)
+        raise ValueError(
+            f"未知形态: {self.mode!r}(可选: {MODE_BARE}, {MODE_LOOP})"
+        )
 
     def _load_history_sync(self, session_id: str) -> List[Dict[str, Any]]:
         """同步读历史(仅限 to_thread 上下文调用,事件循环外执行)。
@@ -145,9 +166,6 @@ class ChatPipeline:
         #    会混入 history 导致当前输入重复(ensure→read 顺序在
         #    _load_history_sync 内保持,read 先于下方 user 落盘)
         raw_history = await asyncio.to_thread(self._load_history_sync, session_id)
-        # ① user 立即落盘(此后断连/LLM 失败都不丢;事件流开始时库中即可见)
-        #    flush 语义 = await commit(§18.1:保"断连不丢输入"契约)
-        await self._persist(session_id, "user", user_input, flush=True)
         history: List[Message] = normalize_history(raw_history)
 
         # 2. 构建 ContextSnapshot(不可变;revision=0,host 独占递增)
@@ -166,14 +184,29 @@ class ChatPipeline:
             started_at=datetime.now().isoformat(),
             history=history,
             system_text=system or self.base_system_prompt,
-            messages=list(history) + [{"role": "user", "content": user_input}],
+            messages=list(history),  # user 消息经资源上限校验后追加(下方)
             extra=extra_base,
             revision=0,
         )
-        # 防陈旧快照:模式实例跨对话复用,final_snapshot 残留上一场对话终态
-        # (SetStop 短路/早期异常都发生在 run_stream 之前,不会经过其重置点)。
-        # 此处先归位为本次构建后快照;run_stream 进入后按推进点正常覆盖。
-        self._mode_instance.final_snapshot = snapshot
+        # 入口 user 消息与扩展 AppendMessage 走**同一套资源上限**
+        # (2026-09-11 交叉评审:此前入口不校验,超限消息可绕过上限进入 LLM;
+        #  2026-09-11 综合评审 P1-1:校验移到落盘**之前** —— 此前先落盘后校验,
+        #  被拒的超限输入已持久化且下轮 normalize_history 回流 LLM,上限被绕过)
+        snapshot, budget_problem = snapshot_with_user_message(snapshot, user_input)
+        if budget_problem:
+            yield {
+                "type": EV_ERROR,
+                "session_id": session_id,
+                "message": f"用户输入非法: {budget_problem}",
+                "code": HOOK_INVALID_ACTION,
+            }
+            return
+        # ① user 立即落盘(校验通过后;此后断连/LLM 失败都不丢;事件流开始时库中即可见)
+        #    flush 语义 = await commit(§18.1:保"断连不丢输入"契约)
+        await self._persist(session_id, "user", user_input, flush=True)
+        # P0-1(2026-09-11):形态实例每对话新建 —— 实例生命周期 = 单次对话,
+        # final_snapshot 不再跨对话共享(此前跨对话复用导致不同 session 并发互踩)
+        mode_instance = self._make_mode_instance()
 
         # 3. 收口四连(§4.4):
         #    ① 注入声明收集(build_injections,注册序)
@@ -240,6 +273,7 @@ class ChatPipeline:
             # ④ 执行形态(bare 单步 / loop 循环),事件流统一处理
             #    事件源契约:必以 done 或 error 收尾(bare 由主干在 step_end 补发 done)
             async for ev in self._iter_events(
+                mode_instance,
                 snapshot, effective_messages, effective_system,
                 cancel_event, session_id,
             ):
@@ -301,7 +335,12 @@ class ChatPipeline:
                         assistant_persisted = True
                 # L3 观测拦截点(§3.2/§18.5):tool_use/tool_result/step_end 进旁路;
                 # L1 热路径/shell 直通事件由 route_l3 内部判定,旁路失败不阻断对话
-                self._route_l3(ev)
+                # 2026-09-11:传**拷贝**给旁路 —— 同一 dict 既入 L3 队列(延迟
+                # 批处理)又 yield 给外壳,obs 扩展改字段会同源影响 core 输出。
+                # P2(2026-09-11 综合评审):deepcopy —— 浅拷贝(dict(ev))下
+                # content_blocks 等嵌套容器仍与主事件流共享引用,原地改嵌套值
+                # 仍会同源污染;L3 为旁路、事件体积小,O(event) 拷贝可接受。
+                self._route_l3(copy.deepcopy(ev))
                 yield ev
 
             # 6. after 钩子(仅正常完成;断连/异常不触发;终态钩子 action 一律忽略)
@@ -311,7 +350,7 @@ class ChatPipeline:
                 # 对话结束后的终态,而非构建时的初始快照(2026-08-21 首个
                 # 扩展接入实验发现:此前传初始 snapshot,round 恒为 0)
                 final_snapshot = getattr(
-                    self._mode_instance, "final_snapshot", None
+                    mode_instance, "final_snapshot", None
                 ) or snapshot
                 await self.hooks.after_all(
                     final_snapshot,
@@ -341,7 +380,7 @@ class ChatPipeline:
                 await self.hooks.on_error_all(
                     # 终态快照(与 after 同源):on_error 也是终态钩子,
                     # 观测枝干读 round/messages/extra 取对话终态
-                    getattr(self._mode_instance, "final_snapshot", None) or snapshot,
+                    getattr(mode_instance, "final_snapshot", None) or snapshot,
                     Exception(error_message or "对话未完成(中断/失败/拦截)"),
                 )
             # 会话态 extra 写回(§5 L-10):done/error 路径均写回最终快照 extra,
@@ -349,7 +388,7 @@ class ChatPipeline:
             # (loop 各推进点已更新 final_snapshot;bare/SetStop 短路 = 构建后快照)。
             self._persist_session_extra(
                 session_id,
-                getattr(self._mode_instance, "final_snapshot", None) or snapshot,
+                getattr(mode_instance, "final_snapshot", None) or snapshot,
             )
 
     def _persist_session_extra(self, session_id: str, snapshot: Snapshot) -> None:
@@ -371,12 +410,11 @@ class ChatPipeline:
     def rebind_hooks(self, new_hooks: HookChain) -> None:
         """热重载后重绑钩子链(§5 L-3):registry.rebuild 生成新链,同步本实例引用。
 
-        loop 形态内部持有 HookChain 引用,必须一并重绑,否则热重载不生效。
+        P0-1(2026-09-11):形态实例已改为每对话新建 —— 新对话经
+        ``_make_mode_instance`` 以 ``self.hooks``(新链)构造;进行中的旧对话
+        继续使用其创建时的链,不受影响。
         """
         self.hooks = new_hooks
-        mode_instance = getattr(self, "_mode_instance", None)
-        if mode_instance is not None and hasattr(mode_instance, "hooks"):
-            mode_instance.hooks = new_hooks
         logger.info("pipeline 钩子链已重绑(%d 个枝干)", len(new_hooks.branches))
 
     def _route_l3(self, event: Event) -> None:
@@ -393,14 +431,18 @@ class ChatPipeline:
 
     async def _iter_events(
         self,
+        mode_instance: Any,
         snapshot: Snapshot,
         messages: List[Message],
         system: Optional[str],
         cancel_event: Optional[Any],
         session_id: str,
     ) -> AsyncIterator[Event]:
-        """事件源:形态实例统一接口 run_stream,必以 done/error 收尾(E6)。"""
-        async for ev in self._mode_instance.run_stream(
+        """事件源:形态实例统一接口 run_stream,必以 done/error 收尾(E6)。
+
+        形态实例由 chat_stream 每对话新建后传入(P0-1,不再持有实例级共享)。
+        """
+        async for ev in mode_instance.run_stream(
             snapshot,
             messages,
             system=system,

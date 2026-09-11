@@ -6,10 +6,10 @@
 
 实现:
 - 按 session_id 惰性创建锁,LRU 有界缓存(maxsize 默认 10000)
-- **严格 LRU 淘汰**:超限时从最旧开始扫描,**首个未持有/未等待的锁**被淘汰
-  (不只看最旧一个)——空闲锁总能被淘汰,缓存仅在"全部锁同时被持有/等待"时
-  才临时超限(绝对必要的互斥优先边界,文档明确,无"空闲锁堆积超限")
-- 持有/等待中的锁不可淘汰 —— 否则同 session 拿到两个不同锁,破坏互斥
+- **严格 LRU 淘汰**:超限时从最旧开始扫描,淘汰**首个未持有/未等待的锁**
+  (不只看最旧一个);**本次刚返回的锁(即当前 session_id)不参与淘汰** ——
+  否则同一 session 会先后拿到两把不同锁,破坏互斥
+- 持有/等待中的锁不可淘汰;其余锁全在使用中时允许缓存**临时超限**(互斥优先)
 - 异步:``async with await locks.get(session_id): ...`` 覆盖整个对话流
 """
 
@@ -34,8 +34,9 @@ class SessionLocks:
         """获取(或创建)session 锁,并移动到最近使用位。
 
         严格 LRU 淘汰:超限时从最旧开始扫描,淘汰**首个未持有/未等待的锁**
-        (不只看最旧一个)——空闲锁总能被淘汰;仅当全部锁都处于持有/等待中才
-        允许缓存临时超限(互斥优先,此边界安全且必要)。
+        (不只看最旧一个);**当前 session_id 本次刚拿到的锁不参与淘汰** ——
+        否则同一 session 会先后拿到两把不同锁,互斥失效。其余锁全处于持有/
+        等待中时允许缓存临时超限(互斥优先)。
         """
         async with self._guard:
             lock = self._locks.pop(session_id, None)
@@ -45,12 +46,16 @@ class SessionLocks:
             while len(self._locks) > self._max_size:
                 evicted = False
                 for lid, candidate in list(self._locks.items()):
+                    # 本次刚返回的锁绝不淘汰:淘汰它会让同 session 的下一次 get
+                    # 另建一把新锁,两把锁并行 → 破坏会话互斥(L-11)
+                    if lid == session_id:
+                        continue
                     if not candidate.locked():
                         self._locks.pop(lid)
                         evicted = True
                         break
                 if not evicted:
-                    # 全部锁在使用中:互斥优先,允许临时超限(安全边界)
+                    # 其余锁全在使用中:互斥优先,允许临时超限(安全边界)
                     break
             return lock
 

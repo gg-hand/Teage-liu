@@ -5,7 +5,7 @@
 ## 1. 配置格式
 
 - 配置文件 YAML（语言无关）；`${ENV_VAR}` 占位注入，敏感字段分离（.env 不入库）；
-- 配置 schema（JSON Schema）: core 段 + 各扩展段；严格校验——未知键拒绝、类型/范围校验，失败 = 启动失败（可读错误列未知键）。
+- 配置 schema（JSON Schema）: core 段 + 各扩展段；严格校验——未知键拒绝、类型/范围校验，失败 = 启动失败（可读错误列未知键）。**严格校验限 core 段**（根级 `additionalProperties: true`：扩展段键名由扩展声明面决定，根级放行，2026-09-11 注明）。
 
 **行为条款 C-1（配置段归属）**: core 段由 core 校验，扩展段由扩展在 setup 自校验（收到自己的配置段）。
 **行为条款 C-2（敏感字段）**: `${VAR}` 占位注入 + `.env` 分离 + 脱敏函数是既有配置功能资产（回指 §15-A8：core 敏感信息不泄漏——配置功能与安全边界区分，不重复声明）。
@@ -29,7 +29,7 @@ core:
     guardrails: { enabled: true }
 ```
 
-> **补录说明（2026-09-10）**：`max_snapshot_bytes` / `max_message_bytes` / `max_messages_per_conversation`（§types T-8 资源上限）与 `extensions_root`（2026-09-08 统一扩展目录树）此前实现已支持但本表遗漏，现补录。按 §3 演进规则，新增 core 配置键属 minor 演进面：`extensions_root` 与 manifest 规范一并登记于 PENDING **P-1**（涉及域含 config）；三个资源上限键**尚无 PENDING 条目**（其语义由 `types.spec.md` §7 的 T-8 条款承载），待 P-1 收口评审时一并决定是否登记。
+> **补录说明（2026-09-10）**：`max_snapshot_bytes` / `max_message_bytes` / `max_messages_per_conversation`（§types T-8 资源上限）与 `extensions_root`（2026-09-08 统一扩展目录树）此前实现已支持但本表遗漏，现补录。按 §3 演进规则，新增 core 配置键属 minor 演进面：`extensions_root` 与 manifest 规范一并登记于 PENDING **P-1**（涉及域含 config）；三个资源上限键已随 PENDING **P-1** 一并登记评审（2026-09-11；其语义由 `types.spec.md` §7 的 T-8 条款承载，配置→生效链路由 `core/snapshot.py::configure_limits` 承载）。
 
 ## 3. 宿主组件插槽（host_components，P-5 条件④，2026-09-11 归档）
 

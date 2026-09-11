@@ -19,9 +19,9 @@ class _StepStub:
         self._stop_reason = stop_reason
 
     async def execute(self, messages, tools=None, system=None,
-                      cancel_event=None, session_id=None):
+                      cancel_event=None, session_id=None, step=1):
         self.calls += 1
-        yield {"type": "step_start", "session_id": session_id, "step": 0}
+        yield {"type": "step_start", "session_id": session_id, "step": step}
         yield {"type": "text_delta", "session_id": session_id, "text": "hi"}
         yield {
             "type": "step_end",

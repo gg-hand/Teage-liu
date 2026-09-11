@@ -25,12 +25,13 @@
   "inputs": {
     "session_id": "s-09",
     "user_input": "轮中注入测试",
-    "round_injection_layer": "BEFORE_INPUT",
-    "round_injection_content": "轮级注入"
+    "round_injector_inject_round": [
+      { "layer": "BEFORE_INPUT", "content": "轮级注入" }
+    ]
   },
   "expected": {
     "event_stream": [
-      { "type": "step_start" },
+      { "type": "step_start", "payload": { "step": 1 } },
       { "type": "step_end" },
       {
         "type": "done",

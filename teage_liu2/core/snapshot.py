@@ -72,16 +72,50 @@ def _measure(snapshot: Snapshot) -> Tuple[int, Snapshot]:
     return base_bytes - 2 + msg_bytes, cached
 
 
+# ---------------------------------------------------------------------------
+# 资源上限接线（P1-4，2026-09-11 交叉评审）：config core.max_* → 真正生效
+# 此前三键在 core/config.py 解析校验却从未被消费（恒用协议默认常量），
+# 表现为"配置静默失效"。此处提供装配点注入（与 hooks.hook_timeout 模块
+# 属性注入同形），由 ChatPipeline(resource_limits=...) / server 装配调用。
+# ---------------------------------------------------------------------------
+_ACTIVE_LIMITS: Dict[str, int] = dict(RESOURCE_LIMITS)
+
+
+def configure_limits(limits: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+    """注入生效的资源上限（``core.max_snapshot_bytes`` 等三个 config 键）。
+
+    未提供 / 键未知 / 值非法 → 该键保持协议默认（``RESOURCE_LIMITS``）。
+    幂等、可反复调用；返回生效后的上限副本。
+    """
+    global _ACTIVE_LIMITS
+    active = dict(RESOURCE_LIMITS)
+    for key, value in (limits or {}).items():
+        if (
+            key in active
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+        ):
+            active[key] = value
+    _ACTIVE_LIMITS = active
+    return dict(_ACTIVE_LIMITS)
+
+
+def active_limits() -> Dict[str, int]:
+    """当前生效的资源上限（只读副本）——供观测与测试。"""
+    return dict(_ACTIVE_LIMITS)
+
+
 def _check_message_budget(
     messages: List[Dict[str, Any]], message: Dict[str, Any]
 ) -> Optional[str]:
     """单条消息入快照前的资源上限检查(§15-A6)。"""
-    limit_count = RESOURCE_LIMITS["max_messages_per_conversation"]
+    limit_count = _ACTIVE_LIMITS["max_messages_per_conversation"]
     if len(messages) >= limit_count:
         return (
             f"消息总条数超上限 {limit_count}(HOOK_INVALID_ACTION)"
         )
-    limit_msg = RESOURCE_LIMITS["max_message_bytes"]
+    limit_msg = _ACTIVE_LIMITS["max_message_bytes"]
     size = _json_len(message)
     if size > limit_msg:
         return (
@@ -93,7 +127,7 @@ def _check_message_budget(
 
 def _check_snapshot_budget(snapshot: Snapshot) -> Tuple[Optional[str], Snapshot]:
     """快照总体积上限检查(§15-A6)。返回 (问题描述, 带体积缓存的新快照)。"""
-    limit = RESOURCE_LIMITS["max_snapshot_bytes"]
+    limit = _ACTIVE_LIMITS["max_snapshot_bytes"]
     size, snapshot = _measure(snapshot)
     if size > limit:
         return (
@@ -250,15 +284,23 @@ def _modify_tool_schema(
     return out
 
 
-def snapshot_with_user_message(snapshot: Snapshot, content: Any) -> Snapshot:
-    """构造含当前 user 输入消息的新快照(初始快照构建用)。"""
+def snapshot_with_user_message(
+    snapshot: Snapshot, content: Any
+) -> Tuple[Snapshot, Optional[str]]:
+    """构造含当前 user 输入消息的新快照(入口构建用)。
+
+    返回 ``(新快照, 问题描述)``:超资源上限时返回 ``(原快照, 描述)``,
+    由调用方(``pipeline.chat_stream``)转 ``error`` 事件 —— 入口 user 消息
+    与扩展 ``AppendMessage`` 走**同一套上限**(2026-09-11 交叉评审:
+    此前入口绕过上限,且本函数是无调用方的死代码)。
+    """
     messages = snapshot.messages
     user_msg: Dict[str, Any] = {"role": "user", "content": content}
     budget = _check_message_budget(messages, user_msg)
     if budget:
         logger.error("HOOK_INVALID_ACTION: %s", budget)
-        return snapshot
-    return snapshot.with_messages(messages + [user_msg])
+        return snapshot, budget
+    return snapshot.with_messages(messages + [user_msg]), None
 
 
 def validate_snapshot_messages(snapshot: Snapshot) -> Optional[str]:

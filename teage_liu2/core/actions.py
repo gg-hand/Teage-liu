@@ -14,6 +14,7 @@ Action 应用规则:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
@@ -136,6 +137,12 @@ def validate_action(action: Any) -> Optional[str]:
     if isinstance(action, SetExtra):
         if not is_valid_setextra_key(action.key):
             return f"SetExtra key 非法: {action.key!r}(必须匹配 ^[a-z0-9_]+\\.[a-z0-9_.]+$)"
+        # 2026-09-11 交叉评审:非 JSON 可序列化值会让快照体积记账恒判 0
+        # (snapshot._measure 的 base 分量不可序列化 → 永不拒绝),上限形同虚设。
+        try:
+            json.dumps(action.value)
+        except (TypeError, ValueError) as e:
+            return f"SetExtra.value 必须可 JSON 序列化(否则资源上限失效): {e}"
         return None
     if isinstance(action, SetStop):
         if not isinstance(action.reason, str):
@@ -173,10 +180,15 @@ class ToolDecision:
     - allow: 放行(不短路,后续 pre_tool_call 仍执行)
     - reject: 策略拒绝(首个 reject 短路;tool_result is_error 回喂)
     - modify: 变形器(改入参;多级按应用序后覆盖先;重过 input_schema)
+
+    ``reason`` 为可读拒绝理由(hooks.schema.json ``ToolDecision.reason`` 已定义,
+    2026-09-11 补齐实现):reject 时用于 tool_result 文案,不再借用 ``input``
+    (``input`` 语义仅 modify 变形的入参)。
     """
 
     decision: str = "allow"
     input: Optional[Dict[str, Any]] = None
+    reason: Optional[str] = None
 
     @property
     def is_reject(self) -> bool:

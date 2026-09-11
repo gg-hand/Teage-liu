@@ -41,10 +41,10 @@
       {
         "type": "custom:negotiation_result",
         "payload": {
-          "proceed_cases": { "type": "integer" },
-          "downgrade_cases": { "type": "integer" },
-          "reject_cases": { "type": "integer" },
-          "all_actions_match": { "type": "boolean" }
+          "proceed_cases": 2,
+          "downgrade_cases": 2,
+          "reject_cases": 3,
+          "all_actions_match": true
         }
       }
     ],

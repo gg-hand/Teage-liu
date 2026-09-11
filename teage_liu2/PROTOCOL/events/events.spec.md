@@ -6,12 +6,12 @@
 
 | 事件 | 时机 | 关键字段 |
 |---|---|---|
-| `step_start` | 一次 LLM 调用开始 | step |
+| `step_start` | 一次 LLM 调用开始 | step（**1-based**：循环形态下每轮递增，从 1 起；裸形态恒 1 —— 2026-09-11 补契约文字，此前仅 schema `minimum:1` 与实现约定） |
 | `text_delta` | 文本增量 | text |
 | `reasoning_delta` | 推理增量（可选） | text, signature |
-| `step_end` | 一次 LLM 调用结束 | content_blocks / stop_reason / usage |
+| `step_end` | 一次 LLM 调用结束 | content_blocks / stop_reason / usage（provider 未上报时为 null） |
 | `tool_use` | LLM 请求工具 | name, input, original_input?, effective_input? |
-| `tool_result` | 工具结果回传 | name, tool_use_id, result, is_error, modified? |
+| `tool_result` | 工具结果回传 | name, tool_use_id, result, is_error, modified?, code? |
 | `done` | 对话结束 | 统一 9 键 |
 | `error` | 对话失败（不产生 done） | message, code? |
 
@@ -21,6 +21,10 @@
 {type: "done", session_id, response, messages, is_complete,
  termination_reason, usage, content_blocks, stop_reason}
 ```
+
+**字段说明（2026-09-11 修正）**：
+- `usage`：`step_end` / `StepSummary` 与 `done` / `AfterResponse` **口径一致**——provider 未上报时为 `null`（不得以 `{}` 伪装"上报了空值"）；
+- `tool_result.code`（P-9）：工具**未成功执行**时的 errors 域错误码——`TOOL_REJECTED_BY_POLICY`（被策略拒绝）/ `TOOL_EXEC_FAILED`（执行异常）；成功时省略。与 `error` 事件的 `code` 同名同义，构成错误码三面模型的①事件面。
 
 **事件演进**: `type: "custom:*"` 为自定义事件，core 透传不解析；成熟后经 RFC 升级为正式事件（minor 版本）。
 **行为条款 E-1（事件源契约）**: 事件流必以 `done` 或 `error` 收尾；`done`/`error` 是终态事件，必须可靠送达外壳（非 best-effort，不可丢弃）。

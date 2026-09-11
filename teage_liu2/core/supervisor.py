@@ -197,6 +197,7 @@ class Supervisor:
         """
         old_adapters = dict(self._adapters)
         old_channels = dict(self._channels)
+        old_ext_configs = dict(self._ext_configs)  # P1-3:回滚时恢复配置
         new_adapters: Dict[str, RemoteBranchAdapter] = {}
         new_channels: Dict[str, StdioChannel] = {}
         try:
@@ -221,6 +222,15 @@ class Supervisor:
                     logger.warning("热重载回滚关闭扩展 %s 失败: %s", name, e)
             self._adapters = old_adapters
             self._channels = old_channels
+            self._ext_configs = old_ext_configs
+            # P1-3(2026-09-11 综合评审):同名重载失败回滚时,上方 _shutdown_channel
+            # 已把该扩展的 bus 身份与 L3 订阅注销 —— 旧链虽恢复,宿主通道全死
+            # (invoke_llm/storage_* 被拒 ERR_UNAVAILABLE、观测流中断,且无日志)。
+            # 对保留的旧扩展重新注册(= bus.register_extension + observe 时 L3 订阅)。
+            for name in new_channels:
+                if name in old_channels:
+                    self._register_extension(name, self._ext_configs.get(name) or {})
+                    logger.info("热重载回滚:已恢复旧扩展 %s 的宿主注册与 L3 订阅", name)
             logger.error("热重载失败,已回滚保旧链")
             raise
         # ④ 成功:关闭旧进程(不在新集合中的),清理已移除扩展的配置

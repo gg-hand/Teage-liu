@@ -7,13 +7,13 @@
 
 `normal / max_loops / user_cancel / no_tool_executor / llm_error / intercepted / tool_rejected`
 
-`tool_rejected` 为 v1.0 新增（现有代码仅 6 个 `TERMINATION_*` 常量、无 `TERMINATION_TOOL_REJECTED`）。
+`tool_rejected` 为 v1.0 新增；代码已落地 7 个 `TERMINATION_*` 常量（含 `TERMINATION_TOOL_REJECTED`，单一事实源 = `core/errors.py`）。
 
 ## 2. 错误码体系
 
 前缀：`LLM_* / LOOP_* / HOOK_* / TOOL_* / STORAGE_* / CONFIG_*`。每个错误码有捕获层、上报方式、兜底行为（错误责任矩阵协议化）。
 
-**v1.0 错误码全集**（落地时行为套件逐条锚定）：
+**v1.0 错误码全集**（可观测面锚定现状，2026-09-11 修正措辞：行为套件锚定 13/18 码，其余 5 码由 `tests_core` 单测锚定，见 §5/R-2）：
 
 | 错误码 | 捕获层 | 上报 | 兜底 |
 |---|---|---|---|
@@ -45,7 +45,7 @@
 | `no_tool_executor` | TOOL_NO_EXECUTOR | done(is_complete=false) |
 | `llm_error` | LLM_TIMEOUT / LLM_CANCELED / LLM_STREAM_FAILED / LLM_API_ERROR | error 事件（不产生 done） |
 | `intercepted` | —（枝干策略，非错误） | done(is_complete=false) |
-| `tool_rejected` | TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID | tool_result is_error 回喂（可能继续至 done） |
+| `tool_rejected` | TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID | tool_result is_error 回喂（可能继续至 done）；`tool_result.code = TOOL_REJECTED_BY_POLICY`（P-9 事件面①）。**折衷登记（2026-09-11 综合评审）**：hooks H-5 轮中拦截时被跳过的剩余工具也发 `tool_result.code = TOOL_REJECTED_BY_POLICY`（"对话已被拦截"语义上更近 intercepted，但受限于 tool_result.code 域，取可接受折衷） |
 
 ## 4. 工具执行语义边界（消除歧义）
 
@@ -63,11 +63,11 @@
 
 | 面 | 位置 | 覆盖码 |
 |---|---|---|
-| ① 事件面 | `error` 事件的 `code` 字段（`events` 域已允许 `code?`） | LLM_TIMEOUT / LLM_CANCELED / LLM_STREAM_FAILED / LLM_API_ERROR / HOOK_INVALID_ACTION |
+| ① 事件面 | `error` 事件的 `code` + `tool_result` 事件的 `code`（P-9，2026-09-11） | LLM_TIMEOUT / LLM_CANCELED / LLM_STREAM_FAILED / LLM_API_ERROR / HOOK_INVALID_ACTION / **TOOL_REJECTED_BY_POLICY / TOOL_EXEC_FAILED** |
 | ② 日志面 | 日志文本 `CODE: message` 前缀 | LOOP_MAX_REACHED / HOOK_TIMEOUT / HOOK_EXCEPTION / HOOK_TERMINAL_ACTION_IGNORED / TOOL_NO_EXECUTOR / **TOOL_EXEC_FAILED / TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID** / STORAGE_WRITE_FAILED / STORAGE_READ_FAILED |
 | ③ 响应面 | transport `{error:{code,message}}`（小写子命名空间，见 §5.1） | 见 §5.1（共 10 码） |
 | ④ 异常/启动失败面 | 抛错的 `ValueError` 消息 `CODE: message` 前缀（启动失败 = 可读错误） | CONFIG_UNKNOWN_KEY / CONFIG_INVALID_VALUE / CONFIG_MISSING_KEY |
-| ⑤ 工具类日志面（**2026-09-11 WP-C 落地**） | 发射点：`core/hooks.py`（TOOL_MODIFY_INVALID / TOOL_EXEC_FAILED）、`core/loop.py`（TOOL_REJECTED_BY_POLICY），均已补 `CODE: ` 前缀（归入 ②） | TOOL_EXEC_FAILED / TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID |
+| ⑤ 工具类日志面（**2026-09-11 WP-C 落地**） | 发射点：`core/hooks.py`（TOOL_MODIFY_INVALID / TOOL_EXEC_FAILED）、`core/loop.py`（TOOL_REJECTED_BY_POLICY），均已补 `CODE: ` 前缀（归入 ②）。**P-9（2026-09-11）**：其中 TOOL_REJECTED_BY_POLICY / TOOL_EXEC_FAILED 同时经 `tool_result.code` 进①事件面（双面） | TOOL_EXEC_FAILED / TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID |
 
 **行为条款 R-2（可观测性）**: 新增错误码必须同时声明其可观测面并落地发射点。**当前锚定状态（2026-09-10）**：
 - 事件面（①）由 `tests_core/test_error_codes_events.py` 锚定（LLM_API_ERROR 事件 + 错误事件 `code ∈ ERROR_CODES`）；

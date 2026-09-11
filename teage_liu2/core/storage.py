@@ -24,7 +24,7 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,13 @@ def _validate_kind(kind: str) -> None:
         raise ValueError(
             f"非法 kind: {kind!r}(仅允许小写字母/数字/点/下划线)"
         )
+
+
+#: 公开 kind 校验入口(P2,2026-09-11 综合评审):宿主组件/server 代理等
+#: 外部消费者不应依赖 core 下划线私有符号 —— 统一经此转调,内部实现可自由演化。
+def validate_kind(kind: str) -> None:
+    """校验 kind 命名空间(公开入口),非法名抛 ValueError(防表注入)。"""
+    _validate_kind(kind)
 
 
 class StorageProvider(abc.ABC):
@@ -167,28 +174,38 @@ class SQLiteStorageProvider(StorageProvider):
     def query(
         self, kind: str, limit: Optional[int] = None, **filters
     ) -> List[dict]:
+        """按 kind 查询（P-4 条款⑧：**filters 先于 limit**）。
+
+        2026-09-11 交叉评审修复：此前先 LIMIT 再在内存过滤（"只在最早的 N 条
+        里过滤"），与 Rust 参考后端（filters-first）语义不一致 —— 同一协议调用
+        因后端不同结果不同。现改为 SQL WHERE（json_extract），与 P-4 对齐。
+        """
         table = self._table_for(kind)
+        if limit is not None and (
+            not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
+        ):
+            raise ValueError(f"limit 必须是正整数,实际 {limit!r}")
+        where_sql = ""
+        params: List[Any] = []
+        for key, value in filters.items():
+            # 字段名白名单(防 SQL 注入;doc 为 JSON 文本,key 拼进 json_extract 路径)
+            safe_key = key.replace("_", "") if isinstance(key, str) else ""
+            if not safe_key or not (safe_key.isascii() and safe_key.isalnum()):
+                raise ValueError(
+                    f"filters 字段名非法: {key!r}(仅允许 ASCII 字母/数字/下划线)"
+                )
+            # IS 而非 =：NULL 安全比较（doc 中缺失该字段 → NULL 也参与匹配）
+            where_sql += f" AND json_extract(doc, '$.{key}') IS ?"
+            params.append(value)
+        sql = f"SELECT doc FROM {table} WHERE 1=1{where_sql} ORDER BY rowid ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
         with self._lock:
             # rowid = 插入序:created_at 同毫秒时顺序稳定(防 flaky)
-            if limit is not None:
-                if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-                    raise ValueError(f"limit 必须是正整数,实际 {limit!r}")
-                cur = self.conn.execute(
-                    f"SELECT doc FROM {table} ORDER BY rowid ASC LIMIT ?",
-                    (int(limit),),
-                )
-            else:
-                cur = self.conn.execute(
-                    f"SELECT doc FROM {table} ORDER BY rowid ASC"
-                )
+            cur = self.conn.execute(sql, tuple(params))
             rows = cur.fetchall()
-        docs = [json.loads(r["doc"]) for r in rows]
-        if filters:
-            docs = [
-                d for d in docs
-                if all(d.get(k) == v for k, v in filters.items())
-            ]
-        return docs
+        return [json.loads(r["doc"]) for r in rows]
 
     def delete(self, kind: str, doc_id: str) -> None:
         table = self._table_for(kind)

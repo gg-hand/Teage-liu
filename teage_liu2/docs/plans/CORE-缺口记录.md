@@ -2,6 +2,11 @@
 
 > **定位**:记录 `teage_liu2/core/` 已发现但**尚未修复**的缺口（core 相关、实现层或协议落地偏差）。已修复项移入 [开发日志.md](./开发日志.md)。唯一契约源 = `teage_liu2/PROTOCOL/`(v1.0.0),以代码为准。
 
+## 登记口径（2026-09-11 综合评审后）
+
+- **lifecycle L-10（会话态 extra 延续）**：由 `tests_core/test_session_extra_continuity.py` + `test_pipeline_concurrency.py` **单测承载**；**套件不锚定**（runner `_run_pipeline_case` 每用例仅单次 `chat_stream`、无多轮驱动，改造 runner 属大改不立项）。
+- **2026-09-11 综合评审修复项**（P0-1 跨 session 串扰 / P1-1 入口校验顺序 / P1-2 shutdown 顺序 / P1-3 回滚重注册 / P1-4 轮间 error code / P1-5 校验器 fail-open / P1-6 reload 重放）：全部落地，完整条目见 [开发日志.md](./开发日志.md) 顶部与根 `docs/plans/2026-09-11-综合评审修复计划.md`；**无新增"登记未修"缺口**。
+
 ## 已修复（正文保留供追溯；变更摘要已同步开发日志）
 
 > 本节仅保留修复记录正文供回溯；每条对应摘要已写入 [开发日志.md](./开发日志.md)。
@@ -78,14 +83,14 @@
 - **修复**:`_insert_message` 去掉内层 `with self.conn:`,插入 + updated_at 更新同由调用方(log_message / log_messages)的事务包裹。
 - **验证**:`tests_core/test_reference_backend.py`(中途失败回滚断言)+ 套件用例 `storage-batch-atomic-26`;变异验证:改回逐条提交 → 两处均红。
 
+### [已修复] H-17"只读视图"无内核级强制（2026-09-11 S2「边界只读视图」落地）
+
+- **现象**:`Snapshot` 是 `@dataclass(frozen=True)`,但 `messages` / `extra` 等是可变容器 —— 扩展原地 `snapshot.messages.append(...)` **会成功并污染 core 状态**(收口后进入 LLM 的消息序列含该篡改)。
+- **定性**:同进程扩展与 core 同权限,只读化**不是安全边界**(本质是防误用);异语言/跨进程扩展的快照经 wire 序列化下发,天然只读 —— 故缺口仅存在于**同进程钩子调用边界**。
+- **修复**:`core/types.py` 新增 `readonly_view(snapshot)`(`messages`/`tools`/`history` → `tuple`、`extra` → `MappingProxyType`,元素仍为共享引用,不 deepcopy —— T-5 不受影响);`core/hooks.py` 对**全部面向扩展的钩子调用**(build_injections / inject_round / before / pre_tool_call / on_tool_call / post_tool_call / after_step / after / on_error)统一改传只读视图,core 自身继续用原快照(视图不回流)。
+- **验证**:套件 `hooks-readonly-31` 收紧为 `messages_roles=[user]`;`tests_core/test_snapshot_identity.py` 新增 2 条(视图容器类型 + 四类原地篡改全被拒且 core 状态不变)。变异验证:去掉 `before` 边界的只读包装 → 用例 31 红(`actual=['user','assistant']`)+ 单测 1 红。
+
 ## 缺口清单
-
-### [P2] H-17"只读视图"无内核级强制（2026-09-11 M2/WP-B 用例 31 如实锚定）
-
-- **现象**:`Snapshot` 是 `@dataclass(frozen=True)`,但 `messages` / `extra` 是可变容器 —— 扩展原地 `snapshot.messages.append(...)` **会成功并污染 core 状态**(收口后进入 LLM 的消息序列含该篡改),H-17"快照对扩展呈现为不可变只读视图"目前只是**契约约定**,非内核强制。
-- **影响**:恶意/失误扩展可绕过 action 机制直接改对话状态;observe 只读(E-9)与 H-17 的强制力不对称(前者有码+忽略,后者无拦截)。
-- **现状锚定**:用例 `hooks-readonly-31` 如实断言"篡改生效"(`messages_roles=[user, assistant]`),**缺口修复后该用例必须收紧为 `[user]`** —— 用例变红即修复信号。
-- **修复方向(未做)**:装配/钩子调用前以只读代理或不可变容器(如 `tuple` + `MappingProxyType`)包装快照;或在 `apply_action_batch` 前校验快照未被外部改写。需评估性能(§18.2 零拷贝/结构共享约束)与兼容面(现有扩展是否依赖可变容器)。
 
 ### [P3] H-9 语义级校验缺"可构造的负例路径"（2026-09-11 M2/WP-B 用例 29 发现）
 

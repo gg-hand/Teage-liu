@@ -22,7 +22,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from ..core.history import HistoryStore
-from ..core.storage import MessageStore, StorageProvider, _validate_kind
+from ..core.storage import MessageStore, StorageProvider, validate_kind
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +362,7 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
 
     # -- StorageProvider ---------------------------------------------------
     def write(self, kind: str, doc):
-        _validate_kind(kind)
+        validate_kind(kind)
         if isinstance(doc, list):
             if not doc:
                 raise ValueError("批量写入 docs 不能为空列表")
@@ -370,11 +370,11 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
         return self._call("write", {"kind": kind, "docs": [doc]})[0]
 
     def read(self, kind: str, doc_id: str):
-        _validate_kind(kind)
+        validate_kind(kind)
         return self._call("read", {"kind": kind, "doc_id": doc_id})
 
     def query(self, kind: str, limit: Optional[int] = None, **filters):
-        _validate_kind(kind)
+        validate_kind(kind)
         if limit is not None:
             if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
                 raise ValueError(f"limit 必须是正整数,实际 {limit!r}")
@@ -383,7 +383,7 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
         })
 
     def delete(self, kind: str, doc_id: str) -> None:
-        _validate_kind(kind)
+        validate_kind(kind)
         self._call("delete", {"kind": kind, "doc_id": doc_id})
 
     # -- HistoryStore / MessageStore ---------------------------------------

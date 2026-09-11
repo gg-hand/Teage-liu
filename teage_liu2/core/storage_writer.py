@@ -204,6 +204,11 @@ class StorageWriter:
                 for attempt in range(1, _BACKGROUND_RETRIES + 1):
                     try:
                         result = task.fn()
+                        # P2(2026-09-11 综合评审):重试成功也必须 resolve ——
+                        # 此前 break 后不经过外层 try/else,flush future 将永不
+                        # resolve(await 挂死;当前 background 无 future 故无表现,
+                        # 属埋雷写法)
+                        task.resolve(result=result)
                         break
                     except Exception as retry_e:
                         if attempt == _BACKGROUND_RETRIES:

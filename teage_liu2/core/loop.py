@@ -18,12 +18,14 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .assembler import incremental_finalize
 from .errors import (
+    HOOK_INVALID_ACTION,
     LOOP_MAX_REACHED,
     TERMINATION_INTERCEPTED,
     TERMINATION_MAX_LOOPS,
     TERMINATION_NORMAL,
     TERMINATION_NO_TOOL_EXECUTOR,
     TERMINATION_USER_CANCEL,
+    TOOL_EXEC_FAILED,
     TOOL_NO_EXECUTOR,
     TOOL_REJECTED_BY_POLICY,
 )
@@ -127,10 +129,14 @@ class ReactLoop:
             round_injections = await self.hooks.inject_round(cur)
             round_messages, problem = incremental_finalize(msgs, round_injections)
             if problem:
+                # P1-4(2026-09-11 综合评审):补事件面①错误码 —— errors.spec §5①
+                # 要求 HOOK_INVALID_ACTION 落 error 事件 code;首轮收口路径
+                # (pipeline.py)已带码,轮间路径此前缺失(孪生路径事件面分叉)
                 yield {
                     "type": EV_ERROR,
                     "session_id": cur.session_id,
                     "message": f"增量收口语义校验失败: {problem}",
+                    "code": HOOK_INVALID_ACTION,
                 }
                 return
 
@@ -143,6 +149,7 @@ class ReactLoop:
                 system=system,
                 cancel_event=cancel_event,
                 session_id=cur.session_id,
+                step=cur.round,  # P1-2:step_start.step = 真实轮次(1-based)
             ):
                 if ev.get("type") == EV_STEP_END:
                     content_blocks = ev.get("content_blocks", []) or []
@@ -181,6 +188,18 @@ class ReactLoop:
             self.final_snapshot = cur
             msgs = list(cur.messages)
 
+            # 轮中 SetStop(after_step)→ 拦截终止(hooks H-5:轮中场景同样 done(intercepted))。
+            # 此前该路径无检查,自然结束(end_turn)时拦截被静默丢弃为 done(normal,is_complete=true)。
+            if cur.stop:
+                logger.info(
+                    "轮中 SetStop(after_step),对话被拦截(%s)", cur.stop_reason
+                )
+                yield self._done(
+                    cur, last_text, msgs, TERMINATION_INTERCEPTED,
+                    usage, content_blocks, stop_reason,
+                )
+                return
+
             # 自然结束(end_turn)→ 完成
             if stop_reason != "tool_use" or not tool_use_blocks:
                 yield self._done(
@@ -192,7 +211,7 @@ class ReactLoop:
 
             # tool_use:工具路径四连(§8)
             tool_results: List[Dict[str, Any]] = []
-            for tb in tool_use_blocks:
+            for tb_idx, tb in enumerate(tool_use_blocks):
                 tool_name = tb.get("name", "")
                 tool_input = tb.get("input", {}) or {}
                 tool_use_id = tb.get("id", "")
@@ -215,6 +234,11 @@ class ReactLoop:
 
                 if decision.is_reject:
                     # 有执行者但被策略拒绝 → tool_rejected(§8)
+                    # reason 为协议定义字段(hooks.schema.json ToolDecision.reason,
+                    # 2026-09-11 补齐);非法扩展若把文案塞进 input 也予以兼容
+                    reject_text = decision.reason or (
+                        decision.input if isinstance(decision.input, str) else ""
+                    ) or ""
                     # P-8 ⑤(2026-09-11 WP-C):补 CODE: 前缀(§errors §5 日志面)
                     logger.warning(
                         "%s: 工具 %s 被策略拒绝(pre_tool_call),tool_rejected 回喂",
@@ -225,24 +249,29 @@ class ReactLoop:
                         "session_id": cur.session_id,
                         "name": tool_name,
                         "tool_use_id": tool_use_id,
-                        "result": f"工具被策略拒绝: {decision.input or ''}",
+                        "result": f"工具被策略拒绝: {reject_text}",
                         "is_error": True,
-                        "termination_reason": "tool_rejected",
+                        # P-9(2026-09-11):事件面①携带 errors 域码。此前用 done 专用
+                        # 枚举名 termination_reason(违反 ToolResultEvent schema:越界键)
+                        "code": TOOL_REJECTED_BY_POLICY,
                     }
                     tool_results.append(
                         tool_result_block(
                             tool_use_id,
-                            f"工具被策略拒绝: {decision.input or ''}",
+                            f"工具被策略拒绝: {reject_text}",
                             is_error=True,
                         )
                     )
                     continue
 
                 # ③ on_tool_call 执行
+                # P2(2026-09-11 综合评审):duration = 本工具执行时长 —— 此前用
+                # step_started,数值含 LLM 流式时间与同批前序工具时间(观测失真)
+                tool_started = time.monotonic()
                 result = await self.hooks.dispatch_tool_call(
                     cur, tool_name, effective_input
                 )
-                exec_duration = time.monotonic() - step_started
+                exec_duration = time.monotonic() - tool_started
 
                 if no_executor(result):
                     # 无枝干可执行:友好终止(保留已产出的文本)
@@ -263,6 +292,34 @@ class ReactLoop:
                     cur, tool_name, effective_input, result, exec_duration
                 )
                 self.final_snapshot = cur
+                if cur.stop:
+                    # H-5 轮中 SetStop:本批次剩余工具**不再执行**(安全拦截),
+                    # 但事件流与消息配对必须完整(H-19 不缺环 / 防下轮 LLM 400)
+                    for rest in tool_use_blocks[tb_idx + 1:]:
+                        rest_id = rest.get("id", "")
+                        rest_name = rest.get("name", "")
+                        rest_input = rest.get("input", {}) or {}
+                        yield {
+                            "type": EV_TOOL_USE,
+                            "session_id": cur.session_id,
+                            "name": rest_name,
+                            "input": rest_input,
+                        }
+                        yield {
+                            "type": EV_TOOL_RESULT,
+                            "session_id": cur.session_id,
+                            "name": rest_name,
+                            "tool_use_id": rest_id,
+                            "result": "对话已被拦截,工具未执行",
+                            "is_error": True,
+                            "code": TOOL_REJECTED_BY_POLICY,
+                        }
+                        tool_results.append(
+                            tool_result_block(
+                                rest_id, "对话已被拦截,工具未执行", is_error=True
+                            )
+                        )
+                    break
 
                 # ④ tool_result 事件(modified 标记)
                 is_error = isinstance(result, Exception)
@@ -277,6 +334,9 @@ class ReactLoop:
                     "result": result_text,
                     "is_error": is_error,
                 }
+                if is_error:
+                    # P-9(2026-09-11):工具执行异常的事件面错误码(与日志面同码)
+                    tool_result_event["code"] = TOOL_EXEC_FAILED
                 if effective_input != tool_input:
                     tool_result_event["modified"] = True
                 yield tool_result_event

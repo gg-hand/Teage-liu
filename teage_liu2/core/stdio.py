@@ -122,6 +122,14 @@ class StdioChannel:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=None,
+                # P2(2026-09-11 综合评审):StreamReader 默认 limit 64KiB —— 超长行
+                # 在 readline() 内即抛 ValueError,永远到不了下方 FRAME_MAX_BYTES
+                # (4MiB)检查;显式放开 limit 让协议级帧长校验可达。
+                # 边界登记(2026-09-11 执行后审查):单行超过 4MiB+64KiB 时
+                # readline() 仍抛 ValueError → 外层 except 终止读循环(通道死亡,
+                # 由 B1 僵死重建兜底),而非丢帧继续 —— 攻击面已收敛到协议上限
+                # 之上,降级为丢帧不立项。
+                limit=FRAME_MAX_BYTES + 65536,
             )
         except (OSError, ValueError) as e:
             raise StdioError(

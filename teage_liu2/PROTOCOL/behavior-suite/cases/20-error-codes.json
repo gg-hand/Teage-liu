@@ -1,7 +1,7 @@
 {
   "id": "error-codes-20",
   "protocol_version": "v1.0.0",
-  "description": "错误码日志面锚定(§errors §6 三面模型): 按 scenarios 驱动 HOOK_EXCEPTION / HOOK_TERMINAL_ACTION_IGNORED / TOOL_NO_EXECUTOR / LOOP_MAX_REACHED / LLM_TIMEOUT / LLM_STREAM_FAILED / LLM_API_ERROR / STORAGE_WRITE_FAILED 八条真实发射路径,经 logging 捕获断言 `CODE: message` 前缀;LLM_CANCELED 为 info 级不入 warning+ 捕获,与其余码由单测覆盖。",
+  "description": "错误码锚定(§errors §6 三面模型): 按 scenarios 驱动 HOOK_EXCEPTION / HOOK_TERMINAL_ACTION_IGNORED / TOOL_NO_EXECUTOR / LOOP_MAX_REACHED / LLM_TIMEOUT / LLM_CANCELED / LLM_STREAM_FAILED / LLM_API_ERROR / STORAGE_WRITE_FAILED 九条真实发射路径 —— 日志面经 logging 捕获断言 `CODE: message` 前缀,事件面经 `custom:error_matrix` 汇总各场景 `error` 事件 code 断言(LLM_CANCELED 属事件面①,用户取消时 info 级日志不入 warning+ 捕获,故只经事件面锚定)。",
   "setup": {
     "extensions": []
   },
@@ -14,6 +14,7 @@
       { "kind": "tool_path_no_executor" },
       { "kind": "loop_max" },
       { "kind": "llm_error", "code": "LLM_TIMEOUT" },
+      { "kind": "llm_error", "code": "LLM_CANCELED" },
       { "kind": "llm_error", "code": "LLM_STREAM_FAILED" },
       { "kind": "llm_error", "code": "LLM_API_ERROR" },
       { "kind": "storage_write_fail" }
@@ -27,6 +28,7 @@
         "TOOL_NO_EXECUTOR",
         "LOOP_MAX_REACHED",
         "LLM_TIMEOUT",
+        "LLM_CANCELED",
         "LLM_STREAM_FAILED",
         "LLM_API_ERROR",
         "STORAGE_WRITE_FAILED"

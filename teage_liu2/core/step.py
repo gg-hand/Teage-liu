@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .errors import (
@@ -54,8 +55,13 @@ class StepExecutor:
         system: Optional[str] = None,
         cancel_event: Optional[Any] = None,
         session_id: Optional[str] = None,
+        step: int = 1,
     ) -> AsyncIterator[Event]:
         """执行一次 LLM 调用,逐个 yield 事件。
+
+        :param step: 本次调用在对话中的序号(1-based,events 域 schema
+            ``StepStartEvent.step`` ``minimum:1``)。loop 形态传当前轮次
+            (``snapshot.round``),bare 形态恒为 1。
 
         正常结束以 step_end 收尾;异常以 error 收尾(不再 yield step_end,
         调用方据此判定本轮失败)。
@@ -63,7 +69,7 @@ class StepExecutor:
         yield {
             "type": EV_STEP_START,
             "session_id": session_id,
-            "step": 0,
+            "step": step,
         }
 
         activity_timeout = self.activity_timeout
@@ -77,30 +83,41 @@ class StepExecutor:
         stop_reason: str = "end_turn"
         usage: Optional[Dict[str, Any]] = None
 
+        stream = self.llm_client.chat_main_stream(
+            messages=messages,
+            tools=tools,
+            system=system,
+            cancel_event=cancel_event,
+            activity_timeout=activity_timeout,
+        )
+        # 流式总超时兜底(2026-09-11 交叉评审重构):超时**只包裹每次 await**,
+        # 不再把 `yield` 包进 asyncio.timeout —— 旧写法在下游慢消费(SSE 背压)
+        # 期间仍在倒计时,且超时取消会施加到消费方任务(表现为消费侧
+        # CancelledError 而非 error 事件,破坏"事件源必以 done/error 收尾")。
+        deadline = time.monotonic() + stream_total_timeout
         try:
-            # 流式总超时兜底(asyncio.timeout, Python 3.11+)
-            async with asyncio.timeout(stream_total_timeout):
-                async for ev in self.llm_client.chat_main_stream(
-                    messages=messages,
-                    tools=tools,
-                    system=system,
-                    cancel_event=cancel_event,
-                    activity_timeout=activity_timeout,
-                ):
-                    etype = ev.get("type")
-                    if etype == "text":
-                        yield {"type": EV_TEXT_DELTA, "session_id": session_id, "text": ev.get("text", "")}
-                    elif etype == "reasoning":
-                        yield {
-                            "type": EV_REASONING_DELTA,
-                            "session_id": session_id,
-                            "text": ev.get("text", ""),
-                            "signature": ev.get("signature"),
-                        }
-                    elif etype == "done":
-                        stop_reason = ev.get("stop_reason", "end_turn") or "end_turn"
-                        content_blocks = ev.get("content_blocks", []) or []
-                        usage = ev.get("usage")
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                async with asyncio.timeout(remaining):
+                    ev = await stream.__anext__()
+                etype = ev.get("type")
+                if etype == "text":
+                    yield {"type": EV_TEXT_DELTA, "session_id": session_id, "text": ev.get("text", "")}
+                elif etype == "reasoning":
+                    yield {
+                        "type": EV_REASONING_DELTA,
+                        "session_id": session_id,
+                        "text": ev.get("text", ""),
+                        "signature": ev.get("signature"),
+                    }
+                elif etype == "done":
+                    stop_reason = ev.get("stop_reason", "end_turn") or "end_turn"
+                    content_blocks = ev.get("content_blocks", []) or []
+                    usage = ev.get("usage")
+        except StopAsyncIteration:
+            pass
         except ActivityTimeout:
             logger.warning("%s: LLM 响应超时(无输出 %s)", LLM_TIMEOUT, activity_timeout)
             yield {

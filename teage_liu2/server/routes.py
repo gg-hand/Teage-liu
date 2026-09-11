@@ -46,6 +46,7 @@ async def chat(request: Request, body: Dict[str, Any]):
         text_parts: list[str] = []
         done_reason: Optional[str] = None
         done_response: Optional[str] = None
+        error_response: Optional[JSONResponse] = None
         async for ev in pipeline.chat_stream(
             session_id, user_input, system=body.get("system")
         ):
@@ -58,10 +59,16 @@ async def chat(request: Request, body: Dict[str, Any]):
                 # 全量 text_delta 拼接会混入中间轮文本(P2-1 回归锚定)
                 done_response = ev.get("response") or "".join(text_parts)
             elif ev.get("type") == "error":
-                return JSONResponse(
+                # P2(2026-09-11 综合评审):不提前 return —— 记录响应并继续消费
+                # 至生成器自然结束,保证 pipeline 生成器的 finally(终态钩子/
+                # extra 写回/落盘兜底)确定执行;此前依赖 return 时 GC 触发
+                # aclose(),与 SSE 路径"不得提前关闭生成器"口径不一
+                error_response = JSONResponse(
                     status_code=502,
                     content={"error": ev.get("message", "LLM 调用失败"), "session_id": session_id},
                 )
+    if error_response is not None:
+        return error_response
     return {
         "response": done_response or "".join(text_parts),
         "session_id": session_id,
@@ -183,6 +190,15 @@ async def reload(request: Request):
             content={"error": f"热重载失败,已回滚保旧链: {e}"},
         )
     new_chain.hook_timeout = new_core_config.hook_timeout  # 保留配置的超时值
+    # P1-6(2026-09-11 综合评审):重放 core.max_* 资源上限 —— configure_limits
+    # 仅在 ChatPipeline.__init__ 消费,reload 不重放则运行中修改三键静默失效
+    from ..core.snapshot import configure_limits
+
+    configure_limits({
+        "max_snapshot_bytes": new_core_config.max_snapshot_bytes,
+        "max_message_bytes": new_core_config.max_message_bytes,
+        "max_messages_per_conversation": new_core_config.max_messages_per_conversation,
+    })
     pipeline.rebind_hooks(new_chain)
     # 同语言扩展身份重新注册(rebuild 产生新实例;新出现的扩展名在此入库,
     # 已移除的扩展身份残留在 bus 侧无副作用 —— kind 前缀按名隔离)

@@ -1,7 +1,7 @@
 # PROTOCOL — teage_liu2 协议族（唯一契约源）
 
 > **协议版本**: v1.0.0（semver；稳定面冻结，见 `VERSION`）
-> **权威规格**: `docs/plans/2026-08-20-终极解耦架构-设计.md`（v1.14）
+> **权威规格**: `docs/plans/2026-08-20-终极解耦架构-设计.md`（v1.15）
 > **定位**: 本目录是 core 与扩展之间一切交互的**唯一契约源**——语言无关，任何宿主语言（Python/Rust/…）按此实现。
 > `teage_liu2/docs/CORE.md` 与 `docs/SUBSYSTEM-SPI.md` 为实现视图，阶段 2 起逐步对齐本目录。
 
@@ -31,9 +31,11 @@
 
 **断言能力纪律（2026-09-10 起）**：runner 对**未实现的断言键一律显式失败**（`_check_supported`），禁止静默忽略——此前 `final.persisted` / `invocations[].isolation` 曾被静默跳过，形成"假绿"。
 
-**依赖边界（2026-09-11 补充）**：runner 依赖 `teage_liu2/core/` 与 `teage_liu2/tests_core/fake_llm.py`；WP-A（M2）起**额外允许**依赖 `teage_liu2/server/` —— 用例 22（`stdio-proxy-roundtrip`）已引用 `server.storage_stdio_proxy.StdioStorageProxy`，用例 23/24（`host-component`）将引用 `server.host_components.load_host_components`。该依赖的定位始终是**本实现的 Python 参考执行器**（语言无关交付物 = `cases/*.json` + `suite.schema.json`，保持零依赖）。
+**依赖边界（2026-09-11 补充）**：runner 依赖 `teage_liu2/core/` 与 `teage_liu2/tests_core/fake_llm.py`；WP-A（M2）起**额外允许**依赖 `teage_liu2/server/` —— 用例 22（`stdio-proxy-roundtrip`）已引用 `server.storage_stdio_proxy.StdioStorageProxy`，用例 23/24（`host-component`）已引用 `server.host_components.load_host_components`。该依赖的定位始终是**本实现的 Python 参考执行器**（语言无关交付物 = `cases/*.json` + `suite.schema.json`，保持零依赖）。
 
-**场景能力补充（2026-09-11 落地审查）**：新增用例 `host-component-disabled-40`（未声明不启用＝已装未启用统计）、`host-component-default-41`（缺省省略 `host_components`＝全插槽用 core 默认实现）、`stdio-proxy-dual-channel-42`（P-7 双档：`custom:stdio_result` 增 `buffered_frames` / `flush_direct_calls` 字段）、`host-component-uninstalled-43`（声明未装＝启动失败）；`error-codes-20` 扩展 `llm_error` / `storage_write_fail` 两类场景（套件错误码锚定 8 → **12 码**）。
+**场景能力补充（2026-09-11 落地审查）**：新增用例 `host-component-disabled-40`（未声明不启用＝已装未启用统计）、`host-component-default-41`（缺省省略 `host_components`＝全插槽用 core 默认实现）、`stdio-proxy-dual-channel-42`（P-7 双档：`custom:stdio_result` 增 `buffered_frames` / `flush_direct_calls` 字段）、`host-component-uninstalled-43`（声明未装＝启动失败）；`error-codes-20` 扩展 `llm_error` / `storage_write_fail` 两类场景并增 `LLM_CANCELED`（经 `custom:error_matrix` 走**事件面①**），套件错误码锚定 8 → **13 码**（runner 已补事件面通道：汇总各场景 `error` 事件 `code`）。
+
+**事件契约修正补充（2026-09-11 交叉评审）**：新增用例 `after-step-stop-44`（hooks H-5 轮中 SetStop → `done(intercepted)`，P0-1 承重锚定）；用例 32 断言改用 `tool_result.code=TOOL_REJECTED_BY_POLICY`（越界键 `termination_reason` 已弃用，见 PENDING **P-9**）；用例 09 增 `step_start.step=1` 断言（P1-2）。套件规模 **43 → 44 条**。
 
 **WP-A 场景与断言能力（2026-09-11，M2；用例集 21 → 39 条）**：
 

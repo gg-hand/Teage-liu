@@ -1,0 +1,48 @@
+{
+  "id": "after-step-stop-44",
+  "protocol_version": "v1.0.0",
+  "description": "hooks H-5(轮中 SetStop): after_step 返回 SetStop → 轮中拦截终止,事件流以 done(termination_reason=intercepted, is_complete=false) 收尾,而非 done(normal, is_complete=true)。本用例为 P0-1 的承重锚定(变异验证:移除 core/loop.py 的 cur.stop guard 应使本用例变红)。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after_step"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-44",
+    "user_input": "after_step 轮中拦截测试",
+    "ext_a_after_step_actions": [
+      { "op": "SetStop", "reason": "blocked-after-step" }
+    ]
+  },
+  "expected": {
+    "invocations": [
+      {
+        "hook": "after_step",
+        "extension": "ext_a",
+        "order": 1
+      }
+    ],
+    "event_stream": [
+      { "type": "step_start" },
+      { "type": "step_end" },
+      {
+        "type": "done",
+        "payload": {
+          "termination_reason": "intercepted",
+          "is_complete": false
+        }
+      }
+    ],
+    "final": {
+      "termination_reason": "intercepted",
+      "is_complete": false
+    }
+  }
+}

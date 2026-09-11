@@ -120,7 +120,7 @@ class WeatherBranch(Branch):
         # TODO(你):实际天气 API 调用
         return f"{input.get('city', '?')} 晴,25°C"
 
-    async def after(self, snapshot: Snapshot, response: Any) -> List[Action]:
+    async def after(self, snapshot: Snapshot, response: AfterResponse) -> List[Action]:
         """正常完成后审计(终态钩子:返回 action 一律忽略,落盘走 host_port 消息)。"""
         if self.host_port is not None:
             await self.host_port.storage_write("weather.audit", [{
@@ -199,7 +199,7 @@ class SensitiveGuard(Branch):
 ```
 
 - 拦截后事件流:单个 `done`(`termination_reason="intercepted"`),无 step 事件;
-- 完整实现见现有枝干 `branches/guardrails.py`(block/warn 双模式)。
+- 完整实现见现有扩展 `data2/extensions/guardrails/main.py`(block/warn 双模式)。
 
 ---
 
@@ -248,7 +248,7 @@ class MemoryBranch(Branch):
         turns = snapshot.extra.get("memory.turns", 0) + 1
         return [SetExtra(key="memory.turns", value=turns)]
 
-    async def after(self, snapshot: Snapshot, response: Any) -> List[Action]:
+    async def after(self, snapshot: Snapshot, response: AfterResponse) -> List[Action]:
         # 持久态:经 host_port.storage_write(kind 带 "memory." 前缀);
         # 重启后 setup 时自恢复。
         if self.host_port is not None:
@@ -316,7 +316,7 @@ class ConsolidationBranch(Branch):
     name = "consolidation"
     capabilities = ["llm"]          # 声明 llm 能力(未声明 → 宿主拒绝,capability_not_declared)
 
-    async def after(self, snapshot: Snapshot, response: Any) -> list:
+    async def after(self, snapshot: Snapshot, response: AfterResponse) -> list:
         if self.host_port is not None:
             result = await self.host_port.invoke_llm(
                 role="main",   # 多角色路由:main / consolidation(LLMClient.chat_role)
@@ -391,7 +391,7 @@ assert done["termination_reason"] == "normal"
 # 全部契约测试(含枝干测试)
 pytest tests_core/ tests_branches/
 
-# 行为套件(协议黄金用例,17/17)
+# 行为套件(协议黄金用例,45/45)
 python PROTOCOL/behavior-suite/runner.py
 
 # 新增枝干自己的测试(推荐:放 tests_branches/test_<name>.py)

@@ -90,6 +90,16 @@ def _stdio_proxy_backend(cfg: dict, options: dict,
             f"stdio-proxy 的 request_timeout_seconds 必须为正数,实际 {timeout!r}"
         )
     proxy = StdioStorageProxy(command=command, request_timeout=float(timeout))
+    # P2-12(2026-09-11 执行后审查):启动**前**先过插槽 ABC 自检 —— 此前 start()
+    # 先行、ABC 校验在 load_host_components 事后进行,校验失败时子进程已 spawn
+    # 完成握手,proxy 对象被丢弃且不在 loaded 中 → 孤儿子进程无人清理。
+    # 自检失败抛 TypeError = 启动失败,子进程尚未创建。
+    for _slot, _abcs in SLOTS.items():
+        for _abc in _abcs:
+            if not isinstance(proxy, _abc):
+                raise TypeError(
+                    f"stdio-proxy 未满足插槽 {_slot!r} 的 {_abc.__name__}"
+                )
     proxy.start()  # 握手失败抛 = 启动失败(不静默降级)
     return {"storage": proxy, "history": proxy}
 

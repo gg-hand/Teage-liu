@@ -45,6 +45,7 @@ class BareMode:
             system=system,
             cancel_event=cancel_event,
             session_id=session_id,
+            step=1,
         ):
             if ev.get("type") == EV_STEP_END:
                 stop_reason = ev.get("stop_reason", "end_turn")

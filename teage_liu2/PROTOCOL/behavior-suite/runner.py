@@ -51,9 +51,12 @@ from teage_liu2.core.registry import BranchRegistry  # noqa: E402
 from teage_liu2.core.storage import SQLiteStorageProvider  # noqa: E402
 from teage_liu2.core.tasks import TaskRegistry  # noqa: E402
 from teage_liu2.core.transport import (  # noqa: E402
+    FRAME_MAX_BYTES,
+    JSON_MAX_DEPTH,
     DeltaFrame,
     TransportBus,
     TransportFrame,
+    check_frame_limits,
     negotiate_protocol_version,
     parse_protocol_version,
 )
@@ -392,7 +395,11 @@ class ScriptedBranch(Branch):
     async def pre_tool_call(self, snapshot: Any, name: str, input: dict) -> ToolDecision:
         self._record("pre_tool_call", snapshot, extra={"name": name, "input": input})
         d = self._behaviors.get("pre_decision") or {}
-        return ToolDecision(decision=d.get("decision", "allow"), input=d.get("input"))
+        return ToolDecision(
+            decision=d.get("decision", "allow"),
+            input=d.get("input"),
+            reason=d.get("reason"),
+        )
 
     async def on_tool_call(self, snapshot: Any, name: str, input: dict) -> Any:
         self._record("on_tool_call", snapshot, extra={"name": name, "input": input})
@@ -462,6 +469,9 @@ def _build_behaviors(name: str, inputs: Dict[str, Any], decl: Dict[str, Any]) ->
                           priority=int(i.get("priority", 0) or 0), key=i.get("key"))
                 for i in val
             ]
+        elif key == f"{name}_after_step_actions":
+            # P0-1 锚定(H-5 轮中短路):after_step 返回 action(含 SetStop)
+            b["after_step_actions"] = [_make(x) for x in val]
         elif key == f"{name}_terminal_actions":
             b["after_actions"] = [_make(x) for x in val]
             b["on_error_actions"] = list(b["after_actions"])
@@ -481,11 +491,40 @@ def _build_behaviors(name: str, inputs: Dict[str, Any], decl: Dict[str, Any]) ->
     return b
 
 
-def _find_behavior_inputs(inputs: Dict[str, Any], suffix: str) -> Any:
-    for k, v in inputs.items():
-        if k.endswith(suffix):
-            return v
-    return None
+#: `<ext>_<suffix>` 形式的 inputs 键，后缀白名单 = `_build_behaviors` 已实现的行为
+_EXTENSION_BEHAVIOR_SUFFIXES = frozenset({
+    "actions", "action", "decision", "result", "injections",
+    "inject_round", "after_step_actions", "terminal_actions", "raise_on",
+})
+
+
+def _check_unknown_extension_inputs(
+    inputs: Dict[str, Any], extensions: List[Dict[str, Any]]
+) -> List[str]:
+    """守卫：``<扩展名>_<后缀>`` 形式的 inputs 键，后缀必须在已知集合内。
+
+    2026-09-11 交叉评审 P1-8：此前 runner 只对 ``expected`` 做白名单守卫，
+    ``inputs`` 中写错/未实现的行为键被**静默忽略** —— 用例"看起来覆盖了实际
+    未覆盖的行为"（假绿向量，与 README 的"禁止静默忽略"纪律相悖）。
+    """
+    problems: List[str] = []
+    names = [e.get("name") for e in extensions or [] if isinstance(e, dict)]
+    for key in inputs:
+        if not isinstance(key, str):
+            continue
+        for name in names:
+            if not name:
+                continue
+            prefix = f"{name}_"
+            if key.startswith(prefix):
+                suffix = key[len(prefix):]
+                if suffix not in _EXTENSION_BEHAVIOR_SUFFIXES:
+                    problems.append(
+                        f"inputs.{key} 不是已实现的扩展行为键"
+                        f"（后缀 {suffix!r} 未识别；已实现 = {sorted(_EXTENSION_BEHAVIOR_SUFFIXES)}）"
+                    )
+                break
+    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -711,8 +750,9 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool,
     # FakeLLM 脚本:按 inputs 构造
     llm = _build_fake_llm(inputs)
     # 可选注入:storage_writer(落盘链路断言) / session_store(会话态 L-10) / core_overrides。
-    # core_overrides **仅**覆盖 ChatPipeline 构造参数 —— 资源上限 max_* 是
-    # core/snapshot.py 的模块常量 RESOURCE_LIMITS(config 键未接线),不在可覆盖范围。
+    # core_overrides **仅**覆盖 ChatPipeline 构造参数 —— resource_limits 经
+    # ChatPipeline(resource_limits=) 接线生效(2026-09-11 综合评审,此前未接线
+    # 该键为死输入;类型 T-8 超限拒绝用例经此驱动)。
     overrides = inputs.get("core_overrides") or {}
     writer = None
     if inputs.get("storage_writer"):
@@ -733,6 +773,7 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool,
             "history_window_messages", inputs.get("history_window_messages", 100)),
         storage_writer=writer,
         session_store=session_store,
+        resource_limits=overrides.get("resource_limits"),
     )
     # L3 拦截点接线
     from teage_liu2.core.event_stream import EventStream
@@ -763,6 +804,9 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool,
     errors: List[str] = []
     errors += _check_supported(expected)
     errors += _check_min_assertions(expected)
+    errors += _check_unknown_extension_inputs(
+        inputs, case.get("setup", {}).get("extensions", [])
+    )
     # L3 观测结果暴露(events 域 E-4/E-7/E-8 断言用):把各 observe 扩展收到的事件
     # 类型汇总成一个 custom:pipeline_l3_result 事件,供 expected.event_stream 断言
     if l3_received:
@@ -918,12 +962,29 @@ async def _run_protocol_case(case: Dict[str, Any], verbose: bool,
     errors: List[str] = []
     errors += _check_supported(expected)
     errors += _check_min_assertions(expected)
+    # P1-7(2026-09-11 综合评审):协议类用例同样受扩展行为键守卫 —— 此前守卫
+    # 仅覆盖 pipeline 类用例,22 条协议类用例的 inputs 死键零拦截。
+    errors += _check_unknown_extension_inputs(
+        inputs, case.get("setup", {}).get("extensions", [])
+    )
     custom_events: List[Dict[str, Any]] = []
 
     if case_id.startswith("transport-frame"):
         frames = inputs.get("frames") or {}
         limits = inputs.get("limits") or {}
         r = {}
+        # limits 落实(2026-09-11 交叉评审):此前读入即弃 —— 用例声明的边界值
+        # 从未生效(假绿输入)。现改为 ①与协议常量机械比对 ②真实驱动超限拒绝。
+        if limits:
+            r["limits_match_protocol"] = (
+                limits.get("frame_max_bytes") == FRAME_MAX_BYTES
+                and limits.get("json_max_depth") == JSON_MAX_DEPTH
+            )
+            limit_bytes = limits.get("frame_max_bytes")
+            if isinstance(limit_bytes, int) and limit_bytes > 0:
+                r["frame_limit_enforced"] = bool(
+                    check_frame_limits({"p": "x" * (limit_bytes + 1)})
+                )
         try:
             f = TransportFrame.decode(json.dumps(frames["valid_full"], ensure_ascii=False))
             r["valid_full_decoded"] = f.type == "invoke_hook"
@@ -965,6 +1026,17 @@ async def _run_protocol_case(case: Dict[str, Any], verbose: bool,
 
         r: Dict[str, Any] = {}
         ops = list(inputs.get("storage_ops") or []) + list(inputs.get("host_port_ops") or [])
+        # P1-7(2026-09-11 综合评审):op 枚举白名单 —— storage_ops 与 host_port_ops
+        # 合并分派,未实现的 op 一律显式失败(此前 read 等死输入被静默跳过)
+        _SUPPORTED_OPS = frozenset({
+            "write", "query", "read", "write_cross_prefix",
+            "invoke_llm", "task_register", "task_cancel",
+        })
+        for op in ops:
+            _raw = str(op.get("op", ""))
+            _check = _raw[len("storage_"):] if _raw.startswith("storage_") else _raw
+            if _check not in _SUPPORTED_OPS:
+                return _CaseResult(case_id, False, f"inputs 声明了未实现的 op: {_raw!r}")
         for op in ops:
             opname = op["op"]
             if opname.startswith("storage_"):
@@ -982,6 +1054,18 @@ async def _run_protocol_case(case: Dict[str, Any], verbose: bool,
                 resp = await bus.handle(ext_name, TransportFrame("storage_query", {"kind": kind, "limit": op.get("limit")}))
                 if "result" in resp:
                     r["query_limit_docs"] = resp["result"].get("docs") or []
+            elif opname == "read":
+                # P1-7 接线(2026-09-11):read 此前声明即跳过(假绿)。doc_id 支持
+                # "__first__" = 首个 write 返回 id;往返比对 write 写入的首个 doc。
+                doc_id = op.get("doc_id", "")
+                if doc_id == "__first__":
+                    ids = r.get("write_batch_ids") or []
+                    doc_id = ids[0] if ids else ""
+                resp = await bus.handle(ext_name, TransportFrame(
+                    "storage_read", {"kind": kind, "doc_id": doc_id}))
+                doc = (resp.get("result") or {}).get("doc")
+                expect_doc = (op.get("docs") or [None])[0]
+                r["read_roundtrip_ok"] = doc is not None and doc == expect_doc
             elif opname == "write_cross_prefix":
                 resp = await bus.handle(ext_name, TransportFrame("storage_write", {"kind": kind, "docs": op["docs"]}))
                 r["cross_prefix_rejected"] = "error" in resp and resp["error"]["code"] == "kind_prefix_violation"
@@ -1106,6 +1190,14 @@ async def _run_protocol_case(case: Dict[str, Any], verbose: bool,
             counts[actual] = counts.get(actual, 0) + 1
             if actual != n.get("expect"):
                 all_match = False
+                # P0-2(2026-09-11 综合评审):逐场景失败立即进 errors(硬校验),
+                # 不依赖 all_actions_match 的 payload 回环 —— 此前 mismatch 只写
+                # payload,matcher {type:integer}/{type:boolean} 对错值同样通过,
+                # 删掉三态判定用例仍绿(假绿)。
+                errors.append(
+                    f"[{case_id}] 版本协商 {n.get('label', '?')}: "
+                    f"expect {n.get('expect')!r}, got {actual!r}"
+                )
         r["proceed_cases"] = counts.get("proceed", 0)
         r["downgrade_cases"] = counts.get("downgrade", 0)
         r["reject_cases"] = counts.get("reject", 0)
@@ -1120,7 +1212,7 @@ async def _run_protocol_case(case: Dict[str, Any], verbose: bool,
         errors += await _run_error_matrix(case)
 
     elif case_id.startswith("error-codes"):
-        errors += await _run_error_code_matrix(case)
+        errors += await _run_error_code_matrix(case, custom_events)
 
     elif case_id.startswith("config-domain"):
         errors += await _run_config_case(case, custom_events)
@@ -1339,14 +1431,19 @@ class _FaultHistoryStore:
 # ---------------------------------------------------------------------------
 # 20 错误码矩阵 / 21 config 域
 # ---------------------------------------------------------------------------
-async def _run_error_code_matrix(case: Dict[str, Any]) -> List[str]:
+async def _run_error_code_matrix(case: Dict[str, Any],
+                                 custom_events: List[Dict[str, Any]]) -> List[str]:
     """20 错误码矩阵:按 scenarios 驱动各码的发射路径。
 
-    断言发生在 _run_protocol_case 末尾 —— 日志面由 _LogCapture 捕获
-    ("CODE: message" 前缀),事件面由 error 事件的 code 字段。
+    双面锚定 —— ①**事件面** = 各场景实际产生的 `error` 事件 `code`(汇总进
+    `custom:error_matrix`,由 _run_protocol_case 末尾统一断言);②**日志面** =
+    _LogCapture 捕获的 `CODE: message` 前缀。此前的实现只取日志面、`custom_events`
+    为空 → 事件面形同虚设;且 LLM_CANCELED 属规范面①(用户取消,info 级日志不入
+    warning+ 捕获),故此前仅单测锚定。本函数补上事件面通道。
     """
     inputs = case.get("inputs") or {}
     errors: List[str] = []
+    observed: List[str] = []  # 事件面:各场景 error 事件的 code
 
     async def _drive(chain: HookChain, llm: Any, session_id: str) -> None:
         storage = _EphemeralStorage()
@@ -1355,8 +1452,9 @@ async def _run_error_code_matrix(case: Dict[str, Any]) -> List[str]:
                 llm_client=llm, history_store=storage, hooks=chain,
                 max_loops=int(inputs.get("max_loops", 3) or 3), storage_writer=None,
             )
-            async for _ in pipeline.chat_stream(session_id, "错误码矩阵"):
-                pass
+            async for ev in pipeline.chat_stream(session_id, "错误码矩阵"):
+                if ev.get("type") == "error" and ev.get("code"):
+                    observed.append(ev["code"])
         finally:
             storage.close()
 
@@ -1414,12 +1512,17 @@ async def _run_error_code_matrix(case: Dict[str, Any]) -> List[str]:
                     history_store=_FaultHistoryStore(),
                     hooks=HookChain(),
                 )
-                async for _ in pipeline.chat_stream("s-20-storefail", "错误码矩阵"):
-                    pass
+                async for ev in pipeline.chat_stream("s-20-storefail", "错误码矩阵"):
+                    if ev.get("type") == "error" and ev.get("code"):
+                        observed.append(ev["code"])
             else:
                 errors.append(f"未知错误码场景: {kind!r}")
         except Exception as e:  # noqa: BLE001 - 矩阵驱动,异常计入用例结果
             errors.append(f"场景 {kind} 驱动异常: {e}")
+    custom_events.append({
+        "type": "custom:error_matrix",
+        "payload": {"event_codes": list(dict.fromkeys(observed))},
+    })
     return errors
 
 
@@ -1765,8 +1868,16 @@ async def _run_host_component_case(case: Dict[str, Any],
                     },
                 })
             elif mode == "uninstalled_probe":
-                # P-1 条件③:声明了未安装的 branch 扩展 → 启动失败(不静默降级)
-                cfg["core"]["branches"] = {"ghost_ext": {"enabled": True}}
+                # P-1 条件③:声明了未安装的 branch 扩展 → 启动失败(不静默降级)。
+                # P1-7(2026-09-11):inputs.extension_name 真实消费 —— 声明名即被
+                # probe 的"未装"名;若声明的是已物化名(ref_storage)则用例语义失效
+                declared = inputs.get("extension_name", "ghost_ext")
+                if not declared or declared == "ref_storage":
+                    errors.append(
+                        f"inputs.extension_name={declared!r} 与'声明未装'语义冲突"
+                        "(须为未物化的名字)"
+                    )
+                cfg["core"]["branches"] = {declared: {"enabled": True}}
                 try:
                     wire_extensions(cfg)
                 except Exception as e:  # noqa: BLE001
@@ -1782,6 +1893,14 @@ async def _run_host_component_case(case: Dict[str, Any],
                         "payload": {"uninstalled_rejected": False},
                     })
             else:
+                # P1-7(2026-09-11):inputs.extension_name 消费 —— 校验用例声明与
+                # runner 物化的 manifest 目录名一致(防声明面与实现面漂移)
+                declared = inputs.get("extension_name")
+                if declared and declared != "ref_storage":
+                    errors.append(
+                        f"inputs.extension_name={declared!r} 与 runner 物化的 "
+                        "manifest 名 'ref_storage' 不一致"
+                    )
                 try:
                     merged, specs, disabled = wire_extensions(cfg)
                     loaded = load_host_components(merged, specs)

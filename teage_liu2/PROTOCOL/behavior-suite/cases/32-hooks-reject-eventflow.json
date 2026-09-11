@@ -1,7 +1,7 @@
 {
   "id": "hooks-reject-eventflow-32",
   "protocol_version": "v1.0.0",
-  "description": "hooks H-19(reject 短路完整性): pre_tool_call 返回 reject 短路执行后,事件流不得缺环 —— 仍须先发 tool_use(携带原始 input)、再发 tool_result(is_error=true, termination_reason=tool_rejected),且被拒绝的工具不得进入 on_tool_call 执行。",
+  "description": "hooks H-19(reject 短路完整性): pre_tool_call 返回 reject 短路执行后,事件流不得缺环 —— 仍须先发 tool_use(携带原始 input)、再发 tool_result(is_error=true, code=TOOL_REJECTED_BY_POLICY),且被拒绝的工具不得进入 on_tool_call 执行。",
   "setup": {
     "extensions": [
       {
@@ -27,13 +27,13 @@
     "user_input": "请调用工具",
     "tool_name": "echo",
     "tool_input": { "x": 1 },
-    "ext_policy_decision": { "decision": "reject", "input": "denied" },
+    "ext_policy_decision": { "decision": "reject", "reason": "denied" },
     "ext_tools_result": "不应执行"
   },
   "expected": {
     "event_stream": [
       { "type": "tool_use", "payload": { "name": "echo" } },
-      { "type": "tool_result", "payload": { "is_error": true, "termination_reason": "tool_rejected" } }
+      { "type": "tool_result", "payload": { "is_error": true, "code": "TOOL_REJECTED_BY_POLICY" } }
     ],
     "invocations": [
       { "hook": "on_tool_call", "extension": "ext_tools", "absent": true }

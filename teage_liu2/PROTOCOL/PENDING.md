@@ -45,7 +45,7 @@
 - 提案日期 / 来源: 2026-08-21 / 阶段 3 验收报告遗留项（supervisor/remote_adapter/stdio/版本协商代码就绪但无真实异语言扩展）
 - 涉及域: transport + lifecycle（握手协商/心跳僵死重建/进程监管）
 - 动机: 异语言通道是 PROTOCOL"语言无关"定位的核心卖点，当前 0 实战案例；首个异语言扩展（如 Node/Rust 实现的 audit 变体）可同时验证版本协商 V-2 与 transport 消息全集
-- 现状: 首个真实异语言扩展 storage_rust（Rust 存储后端）已落地，实战验证见任务 8 结论（`docs/plans/2026-09-09-rust存储后端扩展-执行计划.md`）；同语言链路已由 audit/guardrails 闭环。**入协议条件勾稽（2026-09-10 审计，逐条）**: ①至少 1 个真实异语言扩展跑通 spawn→握手→钩子→host 消息→shutdown 全链——**满足**（storage_rust e2e，含重启恢复）；②版本协商三态（major 拒 / minor 降 / 未上报降）各有用例——**基本满足**（用例 `evolution-negotiation-15` 覆盖 proceed/downgrade/reject，"未上报"归入非法版本拒绝路径）；③行为套件补异语言用例——**已满足（2026-09-11 M2）**：`stdio-proxy-roundtrip-22`（真实子进程 spawn→hello 握手→双通道读写→UTF-8 往返→bye 全链，被测进程 = P-4 参考后端）+ `storage-batch-atomic-26`（真实子进程批量原子性）。结论：保持 experimental，缺口 = ③（与 P-4/P-6 同源：runner 缺 stdio 场景能力）
+- 现状: 首个真实异语言扩展 storage_rust（Rust 存储后端）已落地，实战验证见任务 8 结论（`docs/plans/2026-09-09-rust存储后端扩展-执行计划.md`）；同语言链路已由 audit/guardrails 闭环。**入协议条件勾稽（2026-09-10 审计，逐条）**: ①至少 1 个真实异语言扩展跑通 spawn→握手→钩子→host 消息→shutdown 全链——**满足**（storage_rust e2e，含重启恢复）；②版本协商三态（major 拒 / minor 降 / 未上报降）各有用例——**已满足（2026-09-11 M2）**：用例 `evolution-negotiation-15` 覆盖 proceed(2)/downgrade(2)/reject(3) 七场景，**"未上报"（missing_version）→ downgrade**（2026-09-11 综合评审统一口径，删此前"归入非法版本拒绝路径"的过时括注；断言于同批 P0-2 修复中改为精确字面量）；③行为套件补异语言用例——**已满足（2026-09-11 M2）**：`stdio-proxy-roundtrip-22`（真实子进程 spawn→hello 握手→双通道读写→UTF-8 往返→bye 全链，被测进程 = P-4 参考后端）+ `storage-batch-atomic-26`（真实子进程批量原子性）。结论：**①②③ 均已满足（2026-09-11 M2）**，具备转 `stable` 条件（转档待单独评审）；残余可选项 = 条款②"未上报"曲线的独立用例，已由 `evolution-negotiation-15` 的 `missing_version → downgrade` 覆盖
 - 入协议条件: ①至少 1 个真实异语言扩展跑通 spawn→握手→钩子→host 消息→shutdown 全链 ②版本协商三态（major 拒/minor 降/未上报降）各有用例 ③行为套件补异语言用例
 - 入协议记录: （未并入；若验证全过可升级为"行为套件增补"直接回写 behavior-suite，不必然升协议版本）
 
@@ -100,8 +100,26 @@
 - 提案日期 / 来源: 2026-09-10 / 深度审计 F-3（18 码中仅 2 码有发射点，`CONFIG_*` 为死码；协议套件 0 锚定）
 - 涉及域: errors（主）+ transport（③ 响应面子命名空间登记）
 - 动机: 错误码此前处于"文档态"——责任矩阵定义 18 码，实现只在注释/常量里存在；套件枚举 18 码 **0 命中**，新宿主无法审计错误语义
-- 现状: 已落地三面模型与发射点——①事件面：`error` 事件新增 `code`（step.py 四个 LLM_* + pipeline 的 HOOK_INVALID_ACTION）；②日志面：统一 `CODE: message` 前缀（hooks 的 HOOK_TIMEOUT/HOOK_EXCEPTION、loop 的 LOOP_MAX_REACHED/TOOL_NO_EXECUTOR、snapshot 的 HOOK_INVALID_ACTION、storage_writer/pipeline/transport 的 STORAGE_*、config 的 CONFIG_* 三码由死码接活）；③响应面：transport 10 个小写码登记进 errors.spec §5.1 与 errors.schema.json 的 TransportErrorCode。套件：新增用例 `error-codes-20`（logging 捕获 4 码）+ `config-domain-21`（配置码 2 个）；`hook-isolation-19` 断言 HOOK_EXCEPTION。**2026-09-10 执行后评审补**：事件面此前**零锚定**（删掉全部 `code` 键套件仍全绿），已由 `tests_core/test_error_codes_events.py` 补上（LLM_API_ERROR 事件 + `code ∈ ERROR_CODES`）；`errors.spec §5` 已把三个无发射点的 TOOL_* 码移入"⑤ 待落地"并指向本条条件 ④。**2026-09-11 WP-C 落地**：三码发射点已补（`core/hooks.py` 的 TOOL_MODIFY_INVALID / TOOL_EXEC_FAILED、`core/loop.py` 的 TOOL_REJECTED_BY_POLICY，均带 `CODE: ` 前缀），errors.spec §5 已把三者归入 ② 日志面，条件 ④ 已满足。**2026-09-11 落地审查补齐**：①套件 `error-codes-20` 扩 4 条 LLM_*/STORAGE_WRITE_FAILED 日志面场景（套件锚定 8 → 12 码）；②新增单测 `test_step_error_codes.py` / `test_storage_error_codes.py` / `test_config.py`（CONFIG_MISSING_KEY）/ `test_error_codes_schema.py` —— **并集 18/18 全码锚定（脚本实测，缺失 0）**，四条入协议条件全部满足，具备转 `stable` 条件
-- 入协议条件: ①18 码逐条声明可观测面（已由 errors.spec §5 表格固化）②行为套件对拍覆盖 ≥ 12 码（**已满足 · 2026-09-11 落地审查补齐**：套件 `error_codes` 并集实测 **12 码**（`error-codes-20` 新增 LLM_TIMEOUT / LLM_STREAM_FAILED / LLM_API_ERROR / STORAGE_WRITE_FAILED 四场景）；套件+单测并集 **18/18 全码**）③errors.schema.json 枚举与 `core/errors.py` 常量逐字一致（**已满足 + 机械校验 · 2026-09-11**：新增 `tests_core/test_error_codes_schema.py` 双向比对，此前仅人工事实、无回归防护） ④`TOOL_EXEC_FAILED` / `TOOL_REJECTED_BY_POLICY` / `TOOL_MODIFY_INVALID` 三码的日志发射点落地（**已满足 · 2026-09-11 WP-C**：发射点 = `core/hooks.py` 两码 + `core/loop.py` 一码；锚定 = `tests_core/test_tool_error_codes.py` + 套件用例 `error-responsibility-16`）
+- 现状: 已落地三面模型与发射点——①事件面：`error` 事件新增 `code`（step.py 四个 LLM_* + pipeline 的 HOOK_INVALID_ACTION）；②日志面：统一 `CODE: message` 前缀（hooks 的 HOOK_TIMEOUT/HOOK_EXCEPTION、loop 的 LOOP_MAX_REACHED/TOOL_NO_EXECUTOR、snapshot 的 HOOK_INVALID_ACTION、storage_writer/pipeline/transport 的 STORAGE_*、config 的 CONFIG_* 三码由死码接活）；③响应面：transport 10 个小写码登记进 errors.spec §5.1 与 errors.schema.json 的 TransportErrorCode。套件：新增用例 `error-codes-20`（logging 捕获 4 码）+ `config-domain-21`（配置码 2 个）；`hook-isolation-19` 断言 HOOK_EXCEPTION。**2026-09-10 执行后评审补**：事件面此前**零锚定**（删掉全部 `code` 键套件仍全绿），已由 `tests_core/test_error_codes_events.py` 补上（LLM_API_ERROR 事件 + `code ∈ ERROR_CODES`）；`errors.spec §5` 已把三个无发射点的 TOOL_* 码移入"⑤ 待落地"并指向本条条件 ④。**2026-09-11 WP-C 落地**：三码发射点已补（`core/hooks.py` 的 TOOL_MODIFY_INVALID / TOOL_EXEC_FAILED、`core/loop.py` 的 TOOL_REJECTED_BY_POLICY，均带 `CODE: ` 前缀），errors.spec §5 已把三者归入 ② 日志面，条件 ④ 已满足。**2026-09-11 落地审查补齐**：①套件 `error-codes-20` 扩 4 条 LLM_*/STORAGE_WRITE_FAILED 日志面场景（套件锚定 8 → 12 码，随后 +LLM_CANCELED → **13 码**）；②新增单测 `test_step_error_codes.py` / `test_storage_error_codes.py` / `test_config.py`（CONFIG_MISSING_KEY）/ `test_error_codes_schema.py` —— **并集 18/18 全码锚定（脚本实测，缺失 0）**，四条入协议条件全部满足，具备转 `stable` 条件
+- 入协议条件: ①18 码逐条声明可观测面（已由 errors.spec §5 表格固化）②行为套件对拍覆盖 ≥ 12 码（**已满足 · 2026-09-11 落地审查补齐**，随后深化为 **13 码**：套件 `error_codes` 并集实测 **13 码**（`error-codes-20` 新增 LLM_TIMEOUT / LLM_STREAM_FAILED / LLM_API_ERROR / STORAGE_WRITE_FAILED 四场景 + **LLM_CANCELED** —— 后者经 `custom:error_matrix` 汇总各场景 `error` 事件 `code` 锚定**事件面①**，因其为 info 级日志不入 ②；同时修复了该用例此前事件面通道为空、仅靠日志面侥幸通过的隐患）；套件+单测并集 **18/18 全码**）③errors.schema.json 枚举与 `core/errors.py` 常量逐字一致（**已满足 + 机械校验 · 2026-09-11**：新增 `tests_core/test_error_codes_schema.py` 双向比对，此前仅人工事实、无回归防护） ④`TOOL_EXEC_FAILED` / `TOOL_REJECTED_BY_POLICY` / `TOOL_MODIFY_INVALID` 三码的日志发射点落地（**已满足 · 2026-09-11 WP-C**：发射点 = `core/hooks.py` 两码 + `core/loop.py` 一码；锚定 = `tests_core/test_tool_error_codes.py` + 套件用例 `error-responsibility-16`）
+- 入协议记录: （未并入）
+
+### P-9 tool_result 事件面错误码（事件面①补齐）
+- 状态: experimental
+- 提案日期 / 来源: 2026-09-11 / core 与协议交叉评审（`docs/plans/2026-09-11-core与协议-交叉评审与修正方案.md` §3.1）
+- 涉及域: events（ToolResultEvent 可选 `code`）+ errors（① 事件面覆盖码）
+- 动机: 工具未成功执行时，事件面此前只有 `is_error: true` 布尔——"被策略拒绝"与"执行异常"在事件面**不可区分**，第三方观测扩展（audit）拿不到机器可读原因；且原实现以越界键 `termination_reason`（done 专用枚举名）表达该语义，违反 ToolResultEvent schema（`additionalProperties:false`）
+- 现状: 已落地——`events.schema.json` ToolResultEvent 增可选 `code`；`core/loop.py` 发射点 = reject → `TOOL_REJECTED_BY_POLICY`、执行异常 → `TOOL_EXEC_FAILED`；`errors.spec.md` §3/§5① 同步（两码由"仅日志面"升级为"事件面 + 日志面"双面）；旧越界键已删除
+- 入协议条件: ①契约文本 + schema 落地（**已做**）②行为套件锚定（**已做**：用例 `hooks-reject-eventflow-32` 断言 `code=TOOL_REJECTED_BY_POLICY`）③`tool_result.code ∈ ERROR_CODES` 机械校验（**已做**：`tests_core/test_events_contract.py::test_tool_result_code_within_error_codes`）④稳定运行一轮后随 P-8 一并转 stable/merged
+- 入协议记录: （未并入；VERSION 是否升 v1.1.0 待与 P-1..P-8 转档一批评审）
+
+### P-10 usage 族字段可空语义统一（errata）
+- 状态: experimental
+- 提案日期 / 来源: 2026-09-11 / core 与协议交叉评审 §3.3
+- 涉及域: events（StepEndEvent.usage / StepSummary.usage）
+- 动机: 同一语义（LLM usage）在 4 处两种口径——`done` / `AfterResponse` 允许 `null`，`step_end` / `StepSummary` 却要求 `object`（required）。provider 未上报 usage 是真实且普遍场景，`null` = 未上报、`{}` = 上报但为空；强制 object 会丢失语义，并使 `DoneEvent.usage=null` 退化为不可达死分支
+- 现状: 已落地——两处 schema 放宽为 `["object","null"]`；`events.spec.md` §1 补字段说明；core 代码零改动（`None` 即真实状态）
+- 入协议条件: ①schema + spec 落地（**已做**）②行为套件锚定「provider 未上报 → usage 为 null 且事件合法」（待补）③稳定运行一轮后转 stable
 - 入协议记录: （未并入）
 
 ---
