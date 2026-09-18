@@ -90,6 +90,9 @@ class WeatherBranch(Branch):
         """setup 只做资源准备与配置自校验;配置开但坏 → 抛错 = 启动失败。
         host = 宿主能力声明(纯数据,含 storage 通道与 kind 前缀)。
         """
+        # 未知键拒绝(G3,2026-09-18):键名拼错必须启动失败,不得静默取默认值
+        # from teage_liu2.core.config import reject_unknown_keys
+        reject_unknown_keys(config, {"enabled", "api_key"}, "weather")
         self.api_key = config.get("api_key", "")
         self.kind_prefix = host["storage"]["kind_prefix"]   # = "weather"
         if not self.api_key:
@@ -150,7 +153,7 @@ data2/extensions/weather/
 └── main.py            # 代码(§1 示例)+ 文末导出 create_branch(config) -> Branch
 ```
 
-**启用与运行配置**(config.yaml;安装 ≠ 激活):
+**启用与运行配置**(liu2 读 `config-liu2.yaml`(默认名),经 `TEAGE2_CONFIG` 可指定;**缺失即启动失败,不再回落老系统 `config.yaml`**;安装 ≠ 激活):
 
 ```yaml
 core:
@@ -344,7 +347,7 @@ from teage_liu2.core.llm import LLMClient
 from teage_liu2.core.pipeline import ChatPipeline
 from teage_liu2.core.registry import BranchRegistry
 
-cfg = load_config("config.yaml")
+cfg = load_config("config-liu2.yaml")   # liu2 默认配置名(缺失即失败,不回落 config.yaml)
 core_config = core_config_from(cfg)            # 严格校验,失败 = 启动失败
 
 registry = BranchRegistry()

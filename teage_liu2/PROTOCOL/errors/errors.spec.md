@@ -66,7 +66,7 @@
 | ① 事件面 | `error` 事件的 `code` + `tool_result` 事件的 `code`（P-9，2026-09-11） | LLM_TIMEOUT / LLM_CANCELED / LLM_STREAM_FAILED / LLM_API_ERROR / HOOK_INVALID_ACTION / **TOOL_REJECTED_BY_POLICY / TOOL_EXEC_FAILED** |
 | ② 日志面 | 日志文本 `CODE: message` 前缀 | LOOP_MAX_REACHED / HOOK_TIMEOUT / HOOK_EXCEPTION / HOOK_TERMINAL_ACTION_IGNORED / TOOL_NO_EXECUTOR / **TOOL_EXEC_FAILED / TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID** / STORAGE_WRITE_FAILED / STORAGE_READ_FAILED |
 | ③ 响应面 | transport `{error:{code,message}}`（小写子命名空间，见 §5.1） | 见 §5.1（共 10 码） |
-| ④ 异常/启动失败面 | 抛错的 `ValueError` 消息 `CODE: message` 前缀（启动失败 = 可读错误） | CONFIG_UNKNOWN_KEY / CONFIG_INVALID_VALUE / CONFIG_MISSING_KEY |
+| ④ 异常/启动失败面 | 抛错的 `ValueError` 消息 `CODE: message` 前缀（启动失败 = 可读错误） | CONFIG_UNKNOWN_KEY / CONFIG_INVALID_VALUE / CONFIG_MISSING_KEY（**2026-09-18 补齐覆盖面**：宿主组件装载器 `server/host_components.py` 的全部**配置输入型**失败亦带此三码前缀，此前为裸 `ValueError`；其 **backend 契约型**失败仍为 `TypeError`——那不属于配置错误，由 `tests_core` 锚定） |
 | ⑤ 工具类日志面（**2026-09-11 WP-C 落地**） | 发射点：`core/hooks.py`（TOOL_MODIFY_INVALID / TOOL_EXEC_FAILED）、`core/loop.py`（TOOL_REJECTED_BY_POLICY），均已补 `CODE: ` 前缀（归入 ②）。**P-9（2026-09-11）**：其中 TOOL_REJECTED_BY_POLICY / TOOL_EXEC_FAILED 同时经 `tool_result.code` 进①事件面（双面） | TOOL_EXEC_FAILED / TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID |
 
 **行为条款 R-2（可观测性）**: 新增错误码必须同时声明其可观测面并落地发射点。**当前锚定状态（2026-09-10）**：

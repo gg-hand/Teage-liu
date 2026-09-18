@@ -23,19 +23,24 @@
 
 ```bash
 # 启动（Windows PowerShell 前台）
-.\start.ps1
-# 重启 / 停止
+.\start.ps1          # 老系统，端口 8000，配置 config.yaml
+.\start_liu2.ps1     # 新系统 liu2，端口 7878，配置 config-liu2.yaml
+# 重启 / 停止（仅老系统有配套脚本）
 .\restart.ps1
 .\stop.ps1
-# 健康检查（默认端口 8000）
-curl -s http://127.0.0.1:8000/health
+# 健康检查
+curl -s http://127.0.0.1:8000/health   # 老系统
+curl -s http://127.0.0.1:7878/health   # 新系统 liu2（返回含 protocol_version）
 # 老系统直启
 python -m teage_liu
 ```
 
 ## 关键约定
 
-- **配置**：`config.yaml` 用 `${VAR}` 占位注入 API Key，密钥放 `.env`（不入库）；本地覆盖配置（`config*.yaml`、`.bak`）不入库。
+- **配置（2026-09-18 两系统已解耦；Phase 2：liu2 不再回落 `config.yaml`）**：老系统读 `config.yaml`（`TEAGE_CONFIG`）、新系统读 `config-liu2.yaml`（`TEAGE2_CONFIG`），互不影响；**liu2 的该文件缺失即启动失败（带 `CONFIG_MISSING_KEY`），绝不静默换用老系统配置**；均用 `${VAR}` 占位注入 API Key，密钥放共用 `.env`（不入库）；本地覆盖配置（`config*.yaml`、`.bak`）不入库。
+  - ⚠ **`TEAGE2_CONFIG` / `TEAGE_CONFIG` 禁止写入 `.env`**：两系统都以 `load_dotenv(override=True)` 加载 `.env`，写进去会覆盖启动脚本传入的值，静默切换到别的配置文件。只经启动脚本/命令行/进程环境设置。
+  - ⚠ **配置段严格校验（2026-09-18 Phase 3 起）**：`core` / `llm` / `storage` / `host_components` 四段按 `teage_liu2/PROTOCOL/config/config.schema.json` 校验 —— **未知键拒绝 + 类型/范围校验，失败 = 启动失败**（可读错误列未知键与可用键）。故改这四段时**键名写错会被拦下，不再静默回落默认值**；数值一律写纯数字（`"60"` 这类数字字符串会被拒）。老系统专属键（`llm.context_threshold`、`storage.session_ttl_days`、`storage.cleanup_interval_hours`）在 liu2 内零消费，写上即启动失败。扩展段（`core.branches.<名>`）由扩展 `setup` 自校验（须含未知键拒绝）。
+  - liu2 配置模板 = 根目录 `config-liu2.yaml.example`（复制为 `config-liu2.yaml` 后使用；老系统模板为 `config.yaml.example`）；两者均不入库。
 - **文档**：大改动先写 `docs/plans/YYYY-MM-DD-主题.md`，完成后更新 `CHANGELOG-开发日志.md`。
 - **仓库纯净**：不写测试/临时脚本入库；git 写操作须经用户批准。
 - **仓库纯净例外（2026-09-10 用户授权）**：测试套件允许占用 `tests` 目录 —— `teage_liu2/tests_core/`、`teage_liu2/tests_branches/` 及配套测试辅助模块（如 `tests_core/fake_llm.py`）**合法入库**，并可被 `PROTOCOL/behavior-suite/runner.py` 引用；例外**仅限测试文件**，临时调试脚本与验证产物仍须落仓库外或用完即删。

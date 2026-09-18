@@ -151,11 +151,18 @@ async def get_session_messages(
 async def reload(request: Request):
     """热重载(§5 L-3 原子替换 + 回滚保旧链):supervisor.reload + pipeline 重绑钩子链。
 
-    流程:清除配置缓存 → 重新加载 + core 段校验(失败拒绝) → supervisor.reload
+    流程:清除配置缓存 → 重新加载 + 段校验(core 段 + 宿主段 llm/storage,失败拒绝)
+    → supervisor.reload
     (spawn 新进程 → registry.rebuild 新链 setup 成功 → teardown 旧链 → 关闭旧进程;
     任一步失败回滚保旧链)→ pipeline.rebind_hooks。
     """
-    from ..core.config import clear_config_cache, core_config_from, load_config
+    from ..core.config import (
+        check_declared_segments,
+        check_host_components_segment,
+        clear_config_cache,
+        core_config_from,
+        load_config,
+    )
 
     pipeline = request.app.state.pipeline
     registry = request.app.state.registry
@@ -167,6 +174,18 @@ async def reload(request: Request):
         clear_config_cache()
         new_cfg = load_config(config_path)
         new_core_config = core_config_from(new_cfg)  # 配置非法 → 拒绝重载(保旧链)
+        # 宿主段(llm/storage)结构校验须与启动路径一致(2026-09-18 Phase 3):
+        # 否则会出现"启动拒绝、reload 接受"的口径分裂,热重载成为绕过校验的后门。
+        check_declared_segments(new_cfg)
+        # host_components 段同口径(2026-09-18 审查补):插槽装配只在启动期发生,
+        # reload 不重装宿主组件 —— 但"配置文件里存在非法**结构**"一律拒绝,不因本条
+        # 路径不消费它就静默放行(否则同一份文件在启动/reload 两条路径上判定不一致)。
+        # 已知非对称(刻意保留):**语义类**(未知插槽/backend、重复接管、options 互斥、
+        # ABC)仍只在启动期校验 —— 装配含 spawn 子进程,不可在热重载里做;这类错误在
+        # 下一次启动时 fail-fast。
+        hc_problem = check_host_components_segment(new_cfg.get("host_components"))
+        if hc_problem:
+            raise ValueError(hc_problem)
         # 统一扩展目录树(2026-09-08):重扫 extensions_root(新增/移除/manifest
         # 变更在此生效)+ 校验声明 + 合并 stdio 字段;失败 → 400 拒绝重载(保旧链)
         from ..core.extension_loader import make_directory_loader, wire_extensions

@@ -254,7 +254,12 @@ class HookChain:
     # 生命周期
     # ------------------------------------------------------------------
     async def setup_all(self, config: dict, host: Any) -> None:
-        """启动时初始化全部枝干(setup 失败逆序回滚 + 向上抛 = 启动失败)。"""
+        """启动时初始化全部枝干(setup 失败逆序回滚 + 向上抛 = 启动失败)。
+
+        ⚠ **非生产装配路径**:生产装配走 `core.registry.BranchRegistry.setup_all`
+        (逐枝干传入**自己的配置段**,见 §config C-1)。本方法传的是**全局 cfg**,
+        仅测试/嵌入使用 —— 两者**同名不同义**,勿混用(2026-09-18 标注)。
+        """
         succeeded: List[Branch] = []
         try:
             for branch in self._branches:

@@ -1,0 +1,74 @@
+# =============================================================
+# teage_liu2 配置模板（本文件入库；实际配置 config-liu2.yaml 不入库）
+#
+# 用法：复制为仓库根 `config-liu2.yaml` 后按需修改 ——
+#   cp config-liu2.yaml.example config-liu2.yaml
+#   启动：.\start_liu2.ps1（自动设 TEAGE2_CONFIG=config-liu2.yaml，端口 7878）
+#   或：create_app(config_path="config-liu2.yaml")
+#
+# ⚠ 与老系统彻底解耦：liu2 只读本文件，**不再回落老系统的 config.yaml**；
+#   本文件缺失 = 启动失败（CONFIG_MISSING_KEY），不会静默换用别的配置。
+#
+# ⚠ 严格校验（协议 config 域 §1 / C-1，2026-09-18 起）：`core` / `llm` /
+#   `storage` / `host_components` 四段按 `teage_liu2/PROTOCOL/config/config.schema.json`
+#   校验 —— **未知键拒绝 + 类型/范围校验，失败 = 启动失败（可读错误列未知键）**。
+#   因此：只写下方出现的键；数值一律写纯数字（`"60"` 这类数字字符串会被拒）；
+#   老系统专属键（`llm.context_threshold`、`storage.session_ttl_days`、
+#   `storage.cleanup_interval_hours`）在 liu2 内零消费，写上即启动失败。
+#   老系统专有段（a2a / cron / memory / multiagent / security / server 等）一律不写。
+#
+# ⚠ 密钥：一律用 ${VAR} 占位（经仓库根 .env 注入，与老系统共用同一份），禁止硬编码。
+# ⚠ 不要把 TEAGE2_CONFIG（或 TEAGE_CONFIG）写进 .env：两系统都以
+#   `load_dotenv(override=True)` 模块级加载 .env，写进去会覆盖启动脚本传入的值，
+#   静默切换到别的配置文件。
+# =============================================================
+
+core:
+  mode: loop                          # loop / bare（未知值 = 启动失败）
+  max_loops: 50                       # 1-200
+  # system_prompt: 你是一个……         # 字符串；缺省 = 内置提示词
+  hook_timeout: 5.0                   # 0.1-60 秒
+  history_window_messages: 100        # 1-10000
+  # injection_budget_chars:           # 分层注入预算；层名白名单，每层 100-100000
+  #   PREFIX: 8000                    # 可用层：STABLE_SYSTEM / SYSTEM / PREFIX / MID / BEFORE_INPUT
+  extensions_root: data2/extensions   # 扩展安装根（目录发现；相对路径相对 cwd）
+  max_snapshot_bytes: 2097152         # 1MiB-256MiB（§types T-8 资源上限）
+  max_message_bytes: 524288           # 1KiB-16MiB
+  max_messages_per_conversation: 2000 # 100-100000
+  branches: {}                        # 扩展启用声明（键名 = extensions_root 下的目录名）
+  #   声明的扩展必须在 extensions_root 下真实存在 —— 声明未装 = 启动失败；
+  #   未声明 = 不注册（主干零感知）。注意：`branches:` 留空（null）会被拒，要写 `{}`。
+  #   guardrails: { enabled: true }     # 需先装 data2/extensions/guardrails
+  #   audit: { enabled: true }          # 需先装 data2/extensions/audit
+
+llm:                                  # 恰好这 11 键 = liu2 实际消费面（多写即启动失败）
+  main_provider: deepseek
+  main_model: deepseek-v4-flash       # 必填（缺失 = 启动失败）
+  main_api_key: ${LLM_MAIN_API_KEY}   # 必填（占位符解析后为空 = 启动失败）
+  main_base_url: https://api.deepseek.com   # 可省略/留空 = provider 默认端点
+  max_context_tokens: 200000          # 整数，≥1
+  consolidation_provider: deepseek
+  consolidation_model: deepseek-v4-flash
+  consolidation_api_key: ${LLM_CONSOLIDATION_API_KEY}
+  consolidation_base_url: https://api.deepseek.com
+  activity_timeout: 60                # 秒，≥0.1（单次请求活动超时）
+  stream_total_timeout: 300           # 秒，≥0.1（流式总超时）
+
+storage:
+  sqlite_path: data2/sessions.db      # ⚠ 必须指向 liu2 自己的库
+  #   老系统为 data/sessions.db；填错等于把 liu2 会话写进老系统库。
+  #   该键是 host_components 未接管存储时的 SQLite 兜底路径。
+
+# 宿主组件插槽（可选）：整段省略 = 内置 SQLite，行为与既有完全一致。
+# ⚠ 启用前必须先装好被引用的扩展（options.extension 解析失败 = 启动失败）：
+#   storage_rust 需存在于 data2/extensions/storage_rust/（kind: host-component）。
+# host_components:
+#   - slot: storage                   # 必填，∈ {storage, history}（未知插槽 = 启动失败）
+#     backend: stdio-proxy            # 必填，∈ {sqlite, stdio-proxy}（未注册 = 启动失败）
+#     options:                        # 可选，backend 自解释
+#       extension: storage_rust       # 与 options.command 二选一（同时给出 = 启动失败）
+#       args: ["--db", "data2/storage_rust/sessions.db"]
+#       request_timeout_seconds: 10
+
+# 说明：`server` 段（host/port/cors）不在 liu2 消费面内 —— 监听地址与端口由
+# start_liu2.ps1 / uvicorn 决定（liu2 固定 127.0.0.1:7878）。

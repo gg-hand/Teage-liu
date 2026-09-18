@@ -236,6 +236,7 @@ core:
 ```
 
 - **core 段严格校验**(`core_config_from(cfg) -> CoreConfig`):类型 + 范围 + **未知键拒绝**(core 段未定义键 → 启动失败,可读错误列未知键)——防 typo 静默失效;
+- **宿主段结构校验由协议 schema 运行时驱动**(2026-09-18):`host_components` 条目级(`check_host_components_segment`)+ `llm`/`storage` 段级(`check_declared_segments`,Phase 3 修 G2,数据驱动、零白名单),实现侧不再手写键集白名单 —— 契约改动只改 `PROTOCOL/config/config.schema.json` 即生效;失败 = 启动失败且带 `CONFIG_*` 前缀;
 - **枝干配置枝干自校验**(setup 里,失败 = 启动失败;setup 收到**该枝干自己的配置段** + host 纯数据声明);
 - 未知名枝干名(工厂未注册)→ 启动失败;声明 transport 但无扩展启动器 → 启动失败。
 
@@ -290,7 +291,8 @@ class ToolBranch(Branch):
 1. **实现**:在 `extensions_root` 下建 `<name>/manifest.yaml + main.py`(统一扩展目录树,§13.2),`main.py` 导出 `create_branch(config) -> Branch`;继承 `Branch`,只实现需要的钩子(其余继承空实现),`name` 取唯一标识(extension_name `^[a-z0-9_]+$`,须与目录名一致);
    - 同语言需访问宿主能力(存储/LLM/任务):经装配注入的 `host_port`(`storage_write/query/invoke_llm` 等消息方法);
    - 异语言:manifest 声明 `language: other + transport: stdio + command`(相对路径相对 manifest 目录解析),按协议实现 stdio JSON 行进程;
-2. **启用**:config.yaml 的 `core.branches.<name>` 声明 `enabled: true` + 运行配置(安装 ≠ 激活;关闭 = 不注册;异语言扩展由 supervisor.launcher 装配);
+2. **启用**:运行配置文件(老系统 `config.yaml` / liu2 `config-liu2.yaml`)的 `core.branches.<name>` 声明 `enabled: true` + 运行配置(安装 ≠ 激活;关闭 = 不注册;异语言扩展由 supervisor.launcher 装配);
+   - **配置自校验须含"未知键拒绝"**(2026-09-18,G3):`setup` 内调用 `teage_liu2.core.config.reject_unknown_keys(config, {自有键…} | {"enabled"}, "<扩展名>")`。config 域 C-1 把扩展段校验委派给扩展,**仅值校验防不住 typo** —— 键名拼错会静默取默认值(如 `guardrails.denylist`→`denylst` 致拦截**静默关停**,安全相关);该助手使委派链目标达成,且 core 只提供工具、不感知枝干名;
 3. **验证**:跑 `pytest tests_core/` 的契约测试——"枝干顺序正确、隔离有效、超时生效、setup 失败回滚、注入不落盘"。
 
 **register_factory 定位(§2.1 定案,2026-09-08)**:测试/行为套件/编程式嵌入的内存注入通道,**非生产装载方式**。生产扩展一律走 extensions_root 目录发现(manifest.yaml 为安装态唯一事实源)。当前唯二合法使用方 = `PROTOCOL/behavior-suite/runner.py`(注入 ScriptedBranch)与 `tests_core` / `tests_branches`(注入测试枝干)。"外壳不知道任何枝干名"由代码事实保证:`server/` 无 import branches、生产路径零 register_factory 调用。
@@ -370,7 +372,7 @@ class AuditBranch(Branch):
 
 ### 13.2 统一扩展目录树(2026-09-08 已落地)
 
-**形态**(VSCode 式):目录 = 安装单位,`manifest.yaml` = 安装态唯一事实源;运行态(enabled 开关 + 配置覆盖)在 config.yaml 的 `core.branches.<name>`。根目录由 `core.extensions_root` 指定(默认 `data2/extensions/`,仓库外不入库;相对路径相对 cwd,同 storage 语义)。
+**形态**(VSCode 式):目录 = 安装单位,`manifest.yaml` = 安装态唯一事实源;运行态(enabled 开关 + 配置覆盖)在运行配置文件(老系统 `config.yaml` / liu2 `config-liu2.yaml`)的 `core.branches.<name>`。根目录由 `core.extensions_root` 指定(默认 `data2/extensions/`,仓库外不入库;相对路径相对 cwd,同 storage 语义)。
 
 ```yaml
 # <extensions_root>/<name>/manifest.yaml(启动/热重载时严格校验,坏 manifest = 该扩展装配失败)

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "teage-liu2/protocol/config/v1.0.0",
   "title": "config 域 — 配置协议",
-  "description": "配置文件 YAML(语言无关)。${ENV_VAR} 占位注入, 敏感字段分离(.env 不入库)。配置 schema(JSON Schema): core 段 + 各扩展段; 严格校验——未知键拒绝、类型/范围校验, 失败 = 启动失败。",
+  "description": "配置文件 YAML(语言无关)。${ENV_VAR} 占位注入, 敏感字段分离(.env 不入库)。配置 schema(JSON Schema): 严格校验——未知键拒绝、类型/范围校验, 失败 = 启动失败。段归属三类(§config C-1): core 段(手写校验, 承载 schema 未表达的分层语义) / 宿主段(llm·storage·host_components, 由本 schema 运行时驱动校验) / 扩展段(扩展 setup 自校验)。",
   "definitions": {
     "CoreConfig": {
       "type": "object",
@@ -33,9 +33,35 @@
       "properties": {
         "slot": { "type": "string", "minLength": 1, "description": "∈ SLOTS 白名单(storage / history);重复接管 = 启动失败。" },
         "backend": { "type": "string", "minLength": 1, "description": "∈ BACKENDS 注册表;未注册 = 启动失败。" },
-        "options": { "type": "object", "description": "backend 自解释;options.extension 与 options.command 二选一(同时给出 = 启动失败)。" }
+        "options": { "type": ["object", "null"], "description": "backend 自解释;options.extension 与 options.command 二选一(同时给出 = 启动失败)。null = YAML 空段(`options:`)写法,与省略同义(2026-09-18 声明;此前是「实现容忍 `or {}`、schema 未声明」的漂移)。" }
       },
       "required": ["slot", "backend"],
+      "additionalProperties": false
+    },
+    "LlmConfig": {
+      "type": ["object", "null"],
+      "description": "llm 宿主段(2026-09-18 补录, 修 G2):键集 = liu2 实际消费面(core/llm.py + core/config.py), 此前仅 {\"type\":\"object\"} 无键集 → typo 静默回落(如 main_base_urll 拼错 → 静默改用 provider 默认端点)。null 合法: YAML 空段(`llm:`)的缺省写法, 与缺席等价(段本身是否可用另由 LLMClient 判定)。",
+      "properties": {
+        "main_provider": { "type": "string", "minLength": 1 },
+        "main_model": { "type": "string", "minLength": 1 },
+        "main_api_key": { "type": "string" },
+        "main_base_url": { "type": ["string", "null"] },
+        "max_context_tokens": { "type": "integer", "minimum": 1 },
+        "consolidation_provider": { "type": "string" },
+        "consolidation_model": { "type": "string" },
+        "consolidation_api_key": { "type": "string" },
+        "consolidation_base_url": { "type": ["string", "null"] },
+        "activity_timeout": { "type": "number", "minimum": 0.1 },
+        "stream_total_timeout": { "type": "number", "minimum": 0.1 }
+      },
+      "additionalProperties": false
+    },
+    "StorageConfig": {
+      "type": ["object", "null"],
+      "description": "storage 宿主段(2026-09-18 补录, 修 G2):liu2 只消费 sqlite_path(缺 host_components 接管时的 SQLite 兜底路径)。session_ttl_days / cleanup_interval_hours 是**老系统专属键**(liu2 未实现 TTL/清理), 故不在本键集内 —— 出现即启动失败(该配置不属于 liu2)。",
+      "properties": {
+        "sqlite_path": { "type": "string", "minLength": 1 }
+      },
       "additionalProperties": false
     },
     "ConfigFile": {
@@ -43,16 +69,16 @@
       "properties": {
         "core": { "$ref": "#/definitions/CoreConfig" },
         "host_components": {
-          "type": "array",
+          "type": ["array", "null"],
           "items": { "$ref": "#/definitions/HostComponent" },
-          "description": "宿主组件插槽装配(P-5);缺省省略 = 内置 SQLite 行为完全不变。"
+          "description": "宿主组件插槽装配(P-5);缺省省略 = 内置 SQLite 行为完全不变。null = YAML 空段(`host_components:`)写法,与省略**同义**(2026-09-18 声明 —— 此前是「实现容忍 None、schema 只写 array」的漂移):它是**显式声明的缺省**,不是「静默回落内置实现」;而非数组的其它 falsy 值(`{}` / `0` / 空字符串)仍 = 启动失败(G4 的实质:那些是类型错误)。"
         },
-        "storage": { "type": "object" },
-        "server": { "type": "object" },
-        "llm": { "type": "object" }
+        "storage": { "$ref": "#/definitions/StorageConfig" },
+        "server": { "type": "object", "description": "**liu2 不消费本段**(老系统段:host / port / cors_origins 等 —— liu2 监听地址与端口由 start_liu2.ps1 决定);列此仅为配置根形状文档,不做键集校验。" },
+        "llm": { "$ref": "#/definitions/LlmConfig" }
       },
       "additionalProperties": true,
-      "description": "配置根。核心段(core)严格校验; 扩展段由扩展在 setup 自校验(收到自己的配置段)。"
+      "description": "配置根。严格面 = core 段(手写校验) + 宿主段(host_components / llm / storage, 由本 schema 运行时驱动); 扩展段由扩展在 setup 自校验(收到自己的配置段); 根级放行未声明段(老系统段与未来扩展段)。"
     }
   }
 }

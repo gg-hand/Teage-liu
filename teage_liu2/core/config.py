@@ -3,23 +3,28 @@
 保留:
 - ${ENV_VAR} 占位符递归解析
 - 基于文件 mtime 的缓存(高频端点不重复读盘)
-- 敏感字段分离(实际值写 .env,config.yaml 保留占位符)+ GET 脱敏 / PUT 还原
+- 敏感字段分离(实际值写 .env,运行配置文件保留占位符)+ GET 脱敏 / PUT 还原
 - 关键 API Key 启动校验(llm.main_api_key 缺失阻止启动)
 - LLM 超时默认值(activity_timeout / stream_total_timeout)
 
 F1/F2(计划 §6.7):core 段严格校验 —— core_config_from(cfg) -> CoreConfig:
 类型 + 范围 + **未知键拒绝**(防 typo 静默失效,老系统踩过的坑);
 失败抛 ValueError = 启动失败。
+
+宿主段结构校验(2026-09-18):**协议 schema 运行时驱动** ——
+PROTOCOL/config/config.schema.json 为唯一源(经零依赖 core/schema_check.py),
+消除"schema 作文档 + 实现手写白名单"的双源漂移。语义类检查仍在外壳装载器。
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -31,6 +36,7 @@ from .errors import (
 )
 from .modes import MODE_BARE, MODE_LOOP
 from .injection import _ALL_LAYERS
+from .schema_check import validate_against_schema
 from .types import RESOURCE_LIMITS
 
 # .env 兜底加载(override=True 保证 PUT /config 写入 .env 的新 Key 重启后生效)
@@ -78,7 +84,7 @@ def clear_config_cache() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 敏感字段分离:PUT /config 时将实际值写入 .env,config.yaml 保留占位符
+# 敏感字段分离:PUT /config 时将实际值写入 .env,运行配置文件保留占位符
 # ---------------------------------------------------------------------------
 SENSITIVE_FIELDS: dict[str, str] = {
     "llm.main_api_key": "LLM_MAIN_API_KEY",
@@ -179,7 +185,7 @@ def unmask_sensitive_config(incoming: dict, existing: dict) -> dict:
 def write_config_with_sensitive_separation(
     new_config: dict, config_path: str, env_path: str
 ) -> None:
-    """非敏感字段写 config.yaml,敏感字段实际值写 .env。"""
+    """非敏感字段写运行配置文件,敏感字段实际值写 .env。"""
     from copy import deepcopy
 
     config_to_write = deepcopy(new_config)
@@ -213,7 +219,7 @@ def validate_required_env_vars(config: dict) -> None:
     if missing:
         raise ValueError(
             f"{CONFIG_MISSING_KEY}: 关键 API Key 未配置(环境变量缺失):{', '.join(missing)}。\n"
-            "请设置对应的环境变量或在 config.yaml 中使用 ${VAR_NAME} 占位符。"
+            "请设置对应的环境变量或在运行配置文件中使用 ${VAR_NAME} 占位符。"
         )
     for path in ("llm.consolidation_api_key", "security.api_key"):
         if not _get_nested(config, path):
@@ -241,6 +247,11 @@ def get_llm_timeouts(config: dict) -> tuple[float, float]:
 
 def load_config(config_path: str = "config.yaml") -> dict:
     """读取 YAML 配置文件并返回解析后的 dict(mtime 缓存)。
+
+    默认值 `"config.yaml"` 为**历史默认**(老系统仍用它),本函数**保留不改** ——
+    它只是通用读盘函数;liu2 的入口 `create_app` 已改为**显式要求**实际路径
+    (参数 > `TEAGE2_CONFIG` > `config-liu2.yaml`,且缺失即启动失败,不再回落
+    `config.yaml`,见 Phase 2 / 2026-09-18)。
 
     异常:
         FileNotFoundError: 配置文件不存在
@@ -280,6 +291,207 @@ def load_config(config_path: str = "config.yaml") -> dict:
     _config_cache_mtime = current_mtime
     _config_cache_path = str(config_file)
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# 协议 schema 驱动的宿主段校验(2026-09-18)
+#
+# 为什么:PROTOCOL/config/config.schema.json 此前**只作文档**,运行时校验另有一套
+# 手写白名单 → 双源必然漂移(历史上已双向漂移过:`extensions_root` 是"实现先、
+# schema 后补";`host_components` 的 required/additionalProperties 则是
+# "schema 先、实现从未落实")。现改为:**协议 schema = 宿主段结构校验的运行时唯一源**,
+# 复用零依赖 core/schema_check.py(其自研理由同为"core 依赖面必须最小"),
+# 与项目"机制保障优于文档纪律"的做法一致(参见 extension_loader.check_import_boundary)。
+#
+# 职责切分(不可混淆):
+#   · 结构类(required / 未知键 / 值类型 / 范围) → 本段交 schema 校验
+#   · 语义类(slot∈SLOTS、backend∈BACKENDS、重复接管、options 互斥、kind、ABC)
+#     → 仍由外壳 server/host_components.py 校验(JSON Schema 无法表达)
+#   · 枝干段 core.branches.<name> → **不在此列**(core 不知道枝干名;由扩展 setup 自校验,§config C-1)
+# ---------------------------------------------------------------------------
+_PROTOCOL_CONFIG_SCHEMA: Optional[dict] = None
+
+
+def load_config_schema() -> dict:
+    """加载协议配置 schema(带缓存)。
+
+    PROTOCOL 随包发布;缺失/不可解析 = 安装损坏 → 抛 ValueError(= 启动失败),
+    绝不静默跳过校验(否则会退化为"校验形同虚设")。
+    """
+    global _PROTOCOL_CONFIG_SCHEMA
+    if _PROTOCOL_CONFIG_SCHEMA is not None:
+        return _PROTOCOL_CONFIG_SCHEMA
+    schema_file = (
+        Path(__file__).resolve().parent.parent / "PROTOCOL" / "config" / "config.schema.json"
+    )
+    if not schema_file.exists():
+        raise ValueError(f"{CONFIG_MISSING_KEY}: 协议配置 schema 缺失: {schema_file}")
+    try:
+        with schema_file.open("r", encoding="utf-8") as f:
+            schema = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise ValueError(f"{CONFIG_INVALID_VALUE}: 协议配置 schema 不可解析: {e}") from e
+    if not isinstance(schema, dict):
+        raise ValueError(f"{CONFIG_INVALID_VALUE}: 协议配置 schema 根节点必须是对象")
+    _PROTOCOL_CONFIG_SCHEMA = schema
+    return schema
+
+
+def _config_code_for(problem: str) -> str:
+    """schema_check 的可读描述 → config 域错误码(单一映射点)。
+
+    与 errors.spec §5 面④(异常/启动失败面,`CODE: message`)对齐:
+    必填缺失 / 未知键 / 其余(类型·范围·enum)分别映射到既有三码,不新增错误码。
+    """
+    if "缺少必填字段" in problem:
+        return CONFIG_MISSING_KEY
+    if "不允许字段" in problem:
+        return CONFIG_UNKNOWN_KEY
+    return CONFIG_INVALID_VALUE
+
+
+def check_host_components_segment(raw: Any) -> Optional[str]:
+    """按协议 schema 校验 ``host_components`` **整段**;合法返回 None,非法返回带码描述。
+
+    - 缺席 / ``None`` = 契约允许的缺省(内置 SQLite,行为与既有完全一致)。``None``
+      由 schema 显式声明(``type: ["array","null"]``,YAML 空段 ``host_components:``
+      的写法)—— 不是实现单方面容忍,契约与实现同源;
+    - 非数组的**其它** falsy 值(``{}`` / ``0`` / ``""``)→ 失败。此前实现写作
+      ``cfg.get("host_components") or []``,把它们一并静默当成缺省,与 schema
+      ``type: array`` 漂移(2026-09-18 修正;这是 G4 的实质 —— 类型错误被当缺省);
+    - 逐条结构校验(必须为映射、必填 ``slot``/``backend``、条目内未知键、值类型)
+      由 schema 的 ``definitions.HostComponent`` 承载 —— 契约改动即生效,无需改代码。
+    """
+    if raw is None:
+        return None
+    schema = load_config_schema()
+    hc_schema = (schema.get("definitions") or {}).get("HostComponent")
+    if not isinstance(hc_schema, dict):
+        raise ValueError(f"{CONFIG_MISSING_KEY}: 协议 schema 缺少 definitions.HostComponent")
+    if not isinstance(raw, list):
+        return f"{CONFIG_INVALID_VALUE}: host_components 必须是数组,实际 {type(raw).__name__}"
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            return (
+                f"{CONFIG_INVALID_VALUE}: host_components[{i}] 必须是映射,"
+                f"实际 {type(entry).__name__}"
+            )
+        problem = validate_against_schema(entry, hc_schema)
+        if problem:
+            # schema_check 的路径根为 "$";换成本段的可读定位
+            detail = problem[len("$"):] if problem.startswith("$") else f" {problem}"
+            return f"{_config_code_for(problem)}: host_components[{i}]{detail}"
+    return None
+
+
+#: 宿主段中**不纳入** `check_declared_segments` 的段(已被更专用的校验接管):
+#:   · `core` —— 手写校验承载 schema 未表达的额外语义(`injection_budget_chars` 每层
+#:     100–100000 范围、错误文案的「可用:」提示),其键集由契约同步锁测试锁定
+#:     (`tests_core/test_config.py::test_core_allowed_keys_matches_protocol_schema`);
+#:   · `host_components` —— 外壳装载器逐条校验,以给出 `host_components[i]` 定位。
+_DECLARED_SEGMENTS_EXCLUDED = frozenset({"core", "host_components"})
+
+
+def _closed_segment_definitions() -> Dict[str, dict]:
+    """取协议 schema 中**已闭合声明**的宿主段:段名 → 其定义(deref 后)。
+
+    判定 = ``definitions.ConfigFile.properties[段]`` 为 ``$ref``,且被引用定义带
+    ``additionalProperties: false``(即"本域已声明完整键集" —— 只有这种段才能判未知键)。
+    **校验清单由 schema 推导、不写死在实现里**:契约侧新增一段(补键集 + 改 ``$ref``)
+    即自动纳入生效。``_DECLARED_SEGMENTS_EXCLUDED`` 是**刻意的排除名单**(附理由),
+    与"清单不写死"不矛盾 —— 它排除的段各有更专用的校验。
+
+    注意(子集校验器的边界,已有测试锁):``core/schema_check.py`` 对**未支持的关键字
+    一律宽容跳过**(``$ref`` / ``allOf`` / ``propertyNames`` …),故闭合段定义内出现这类
+    关键字会**静默不校验** —— 现行两段(``LlmConfig`` / ``StorageConfig``)均为扁平键集,
+    `tests_core/test_config.py::test_declared_segments_have_no_unsupported_keywords`
+    在契约侧加此类关键字时即红。
+    """
+    schema = load_config_schema()
+    definitions = schema.get("definitions") or {}
+    config_file = definitions.get("ConfigFile") or {}
+    properties = config_file.get("properties") or {}
+    segments: Dict[str, dict] = {}
+    for name, spec in properties.items():
+        if name in _DECLARED_SEGMENTS_EXCLUDED or not isinstance(spec, dict):
+            continue
+        ref = spec.get("$ref")
+        if not isinstance(ref, str) or not ref.startswith("#/definitions/"):
+            continue
+        definition = definitions.get(ref[len("#/definitions/"):])
+        if isinstance(definition, dict) and definition.get("additionalProperties") is False:
+            segments[name] = definition
+    return segments
+
+
+def check_declared_segments(cfg: Any) -> None:
+    """按协议 schema 校验全部**已闭合声明的宿主段**(当前 `llm` / `storage`)。
+
+    G2 修复(2026-09-18 Phase 3):`llm` / `storage` 段**既非 core 段、也非扩展段**,
+    C-1 原二分法未指派归属 → 实现零校验,键名 typo **静默回落**
+    (`llm.main_base_urll` → 静默改用 provider 默认端点;`storage.sqlite_pth` →
+    静默改用默认库)。现以已建立的架构收口(**零白名单**):键集 / 类型 / 范围一律由
+    `config.schema.json` 表达,实现只负责"按 schema 校验这一段";契约改动只改 schema。
+
+    语义类检查不在此列(`slot ∈ SLOTS`、`backend ∈ BACKENDS` 等仍在外壳装载器)。
+
+    缺席 / ``null``(YAML 空段 ``llm:`` 的写法)= 合法缺省(schema 未声明 required,
+    且两段类型含 ``null``);失败抛 ``ValueError`` = 启动失败,带 ``CONFIG_*`` 前缀
+    (errors 域 §5 面④)。
+    """
+    if cfg is None:
+        return
+    if not isinstance(cfg, dict):
+        raise ValueError(
+            f"{CONFIG_INVALID_VALUE}: 配置根必须是映射,实际 {type(cfg).__name__}"
+        )
+    for name, segment_schema in _closed_segment_definitions().items():
+        if name not in cfg or cfg[name] is None:
+            continue
+        problem = validate_against_schema(cfg[name], segment_schema)
+        if not problem:
+            continue
+        code = _config_code_for(problem)
+        # schema_check 的路径根为 "$";换成本段的可读定位(同 check_host_components_segment)
+        detail = problem[len("$"):] if problem.startswith("$") else f" {problem}"
+        if code == CONFIG_UNKNOWN_KEY and detail.startswith(" 不允许字段"):
+            available = ", ".join(sorted(segment_schema.get("properties") or {}))
+            raise ValueError(f"{code}: {name} 段{detail}(可用: {available})")
+        raise ValueError(f"{code}: {name}{detail}")
+
+
+def reject_unknown_keys(segment: Any, allowed: Iterable[str], segment_name: str) -> None:
+    """扩展段配置的**未知键拒绝**助手（2026-09-18，修 G3）。
+
+    背景：config 域行为条款 **C-1** 把扩展段校验委派给扩展在 `setup` 自校验，但
+    **只做值校验防不住 typo** —— 键名拼错时扩展取到的是默认值，表现为**静默失效**
+    （如 `core.branches.guardrails.denylist` 写成 `denylst` → `denylist` 取到 `[]`
+    → 拦截**静默关停**，属安全相关后果）。本助手把"未知键拒绝"降为一行调用，
+    使 C-1 的委派链真正达成其目的。
+
+    **归属不变量**：core 只提供**工具**，`allowed` 由扩展自己声明 —— core 不参与
+    判定任何枝干键集，不违反"core 不知道枝干名"铁律（依赖铁律）。
+
+    约定（SPI §12 接入三步法）：
+    - 缺席（``None``）视为合法缺省（该扩展未被运行配置声明）；
+    - `allowed` = 扩展自有键 ∪ 宿主键 ``enabled``（stdio 扩展另加 ``transport``/``command``）；
+    - 失败抛 ``ValueError`` = 启动失败，带 ``CONFIG_UNKNOWN_KEY`` 与「可用:」提示
+      （对齐 errors 域 §5 面④）。
+    """
+    if segment is None:
+        return
+    if not isinstance(segment, dict):
+        raise ValueError(
+            f"{CONFIG_INVALID_VALUE}: {segment_name} 必须是映射，"
+            f"实际 {type(segment).__name__}"
+        )
+    allowed_set = set(allowed)
+    unknown = sorted(set(segment) - allowed_set)
+    if unknown:
+        raise ValueError(
+            f"{CONFIG_UNKNOWN_KEY}: {segment_name} 包含未知配置键: {', '.join(unknown)}"
+            f"（可用: {', '.join(sorted(allowed_set))}）"
+        )
 
 
 # ---------------------------------------------------------------------------

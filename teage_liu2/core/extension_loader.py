@@ -4,7 +4,7 @@
 → 按语言装载(python=进程内 importlib / other=stdio 交 Supervisor)。
 
 manifest.yaml 是扩展的安装态唯一事实源(身份/装载方式/capabilities 声明面);
-运行态(enabled 开关 + 配置覆盖)在 config.yaml 的 core.branches.<name>。
+运行态(enabled 开关 + 配置覆盖)在运行配置文件的 core.branches.<name>(liu2 读 config-liu2.yaml)。
 本模块不感知任何具体扩展名(依赖铁律:core 不知道任何枝干)。
 """
 from __future__ import annotations

@@ -26,3 +26,11 @@ packages = [
     "teage_liu2.core",
     "teage_liu2.server",
 ]
+
+# 非 .py 运行时资产必须显式声明,否则 `pip install` 后不会随包发布:
+# - PROTOCOL/config/config.schema.json —— 配置结构校验的**运行时唯一源**
+#   (`core/config.py::load_config_schema` 在启动路径无条件加载;缺失 = fail-closed 启动失败,
+#   装包部署会"安装即坏",2026-09-18 审查发现并修复)。
+# - web/** —— `/ui` 静态前端(`server/app.py` 挂载;缺失时该挂载被跳过,属静默降级)。
+[tool.setuptools.package-data]
+teage_liu2 = ["PROTOCOL/config/*.json", "web/**/*"]

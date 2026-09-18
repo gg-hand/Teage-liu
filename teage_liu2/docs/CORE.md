@@ -272,6 +272,9 @@ core:
 
 - `core_config_from(cfg) -> CoreConfig`:类型 + 范围 + **未知键拒绝**(core 段未定义键 → 启动失败,可读错误列未知键);
 - 枝干配置**枝干自校验**(setup 里,失败 = 启动失败);
+- **宿主段**(`host_components` 条目级 + `llm`/`storage` 段级)的**结构校验由协议 schema 运行时驱动**(2026-09-18):`core/config.py` 直接消费 `PROTOCOL/config/config.schema.json`(经零依赖 `core/schema_check.py`),实现侧不再手写键集白名单;
+  - `host_components`:`check_host_components_segment`(逐条给 `host_components[i]` 定位);语义校验(插槽/后端白名单、重复接管、`options` 互斥、ABC)在装载器。失败 = 启动失败且带 `CONFIG_*` 前缀;
+  - `llm` / `storage`:**`check_declared_segments`**(Phase 3,2026-09-18,修 G2)—— **数据驱动**:凡 `definitions.ConfigFile.properties` 中以 `$ref` 指向"带 `additionalProperties: false` 的定义"的段自动纳入(段清单不写死在实现里),缺席 / YAML 空段(`llm:` → `null`)= 合法缺省。调用点两处且**口径一致**:`create_app`(**先于一切构造**,否则 llm 段类型错误会先以原始 `int()` 异常暴露、键名 typo 更会静默回落)+ `routes.reload`(防"启动拒绝、reload 接受"的后门)。`llm` 键集 = liu2 实际消费面(11 键);`storage` 仅 `sqlite_path`(老系统专属键 `session_ttl_days`/`cleanup_interval_hours` 与 `llm.context_threshold` 出现即启动失败);
 - 未知名枝干名(工厂未注册)→ 启动失败;声明 transport 但无扩展启动器 → 启动失败。
 
 ---
@@ -279,10 +282,11 @@ core:
 ## 8. 接入三步法(新枝干)
 
 1. **实现**:在 `extensions_root` 下建 `<name>/manifest.yaml + main.py`(统一扩展目录树,2026-09-08;manifest 规范见 SPI §13.2),`main.py` 导出 `create_branch(config) -> Branch`;继承 `Branch`,只实现需要的钩子,`name` 取唯一标识(extension_name `^[a-z0-9_]+$`,须与目录名一致;示例见 [INTERFACES.md](./INTERFACES.md));
-2. **启用**:config.yaml 的 `core.branches.<name>` 声明 `enabled: true` + 运行配置(安装 ≠ 激活);
+2. **启用**:运行配置文件的 `core.branches.<name>` 声明 `enabled: true` + 运行配置(安装 ≠ 激活;liu2 经 `TEAGE2_CONFIG` 读 `config-liu2.yaml`,**缺失即启动失败、不再回落老系统 `config.yaml`**,见 Phase 2/2026-09-18);
    - 异语言扩展:manifest 声明 `language: other + transport: stdio + command`,由 `supervisor.launcher` 装配;
    - 需访问宿主能力(存储/LLM/任务):同语言经注入的 `host_port`,异语言经 stdio 消息;
    - `register_factory` = 测试/行为套件/嵌入注入通道(设计 §2.1),非生产装载方式;生产装载 = `registry.set_directory_loader`(extensions_root 目录发现);
+   - **配置自校验须含"未知键拒绝"**(2026-09-18,G3 修复):在 `setup` 调用 `reject_unknown_keys(config, {自有键…} | {"enabled"}, "<扩展名>")`(`teage_liu2.core.config`)。**只做值校验防不住 typo** —— 键名拼错时扩展取到的是默认值,表现为**静默失效**(如 `guardrails.denylist` → `denylst` 会让拦截**静默关停**)。core 只提供工具、不感知枝干名;
 3. **验证**:跑 `pytest tests_core/ tests_branches/` 契约测试(顺序/隔离/超时/回滚/注入不落盘)。
 
 **硬标准**:新枝干**不得**改动 `core/` 任何文件(接入 = 零改动铁律)。

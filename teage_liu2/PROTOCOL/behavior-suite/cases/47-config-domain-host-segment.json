@@ -1,0 +1,55 @@
+{
+  "id": "config-domain-host-segment-47",
+  "protocol_version": "v1.0.0",
+  "description": "config 域契约(§config §1 / C-1 / §4,2026-09-18 修 G2):宿主段 llm / storage 的结构校验由协议 schema 运行时驱动(实现零白名单) —— 未知键拒绝(CONFIG_UNKNOWN_KEY,含老系统专属键 llm.context_threshold 与 storage.session_ttl_days:该配置不属于 liu2)、类型收紧(数字字符串被拒 = CONFIG_INVALID_VALUE)、缺席与 YAML 空段(null)为合法缺省。用例只断言错误码,不复制键清单(键清单唯一源 = config.schema.json)。",
+  "setup": {
+    "extensions": []
+  },
+  "inputs": {
+    "host_segments": {
+      "valid": [
+        {
+          "llm": {
+            "main_provider": "deepseek",
+            "main_model": "deepseek-v4-flash",
+            "main_api_key": "${LLM_MAIN_API_KEY}",
+            "main_base_url": "https://api.deepseek.com",
+            "max_context_tokens": 200000,
+            "activity_timeout": 60,
+            "stream_total_timeout": 300
+          },
+          "storage": { "sqlite_path": "data2/sessions.db" }
+        },
+        { "llm": null, "storage": null },
+        { "storage": {} },
+        { "core": { "mode": "bare" } }
+      ],
+      "invalid": [
+        { "label": "llm_unknown_key", "cfg": { "llm": { "main_base_urll": "https://x" } }, "code": "CONFIG_UNKNOWN_KEY" },
+        { "label": "storage_unknown_key", "cfg": { "storage": { "sqlite_pth": "x.db" } }, "code": "CONFIG_UNKNOWN_KEY" },
+        { "label": "legacy_llm_key", "cfg": { "llm": { "context_threshold": 0.8 } }, "code": "CONFIG_UNKNOWN_KEY" },
+        { "label": "legacy_storage_key", "cfg": { "storage": { "session_ttl_days": 7 } }, "code": "CONFIG_UNKNOWN_KEY" },
+        { "label": "legacy_storage_key2", "cfg": { "storage": { "cleanup_interval_hours": 6 } }, "code": "CONFIG_UNKNOWN_KEY" },
+        { "label": "numeric_string", "cfg": { "llm": { "max_context_tokens": "200000" } }, "code": "CONFIG_INVALID_VALUE" },
+        { "label": "llm_not_object", "cfg": { "llm": "deepseek" }, "code": "CONFIG_INVALID_VALUE" },
+        { "label": "timeout_out_of_range", "cfg": { "llm": { "activity_timeout": 0 } }, "code": "CONFIG_INVALID_VALUE" }
+      ]
+    }
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:config_host_segment_result",
+        "payload": {
+          "host_valid_ok": true,
+          "host_all_invalid_carry_code": true,
+          "host_invalid_count": 8,
+          "observed_codes": ["CONFIG_UNKNOWN_KEY", "CONFIG_INVALID_VALUE"]
+        }
+      }
+    ],
+    "error_codes": {
+      "must_include": ["CONFIG_UNKNOWN_KEY", "CONFIG_INVALID_VALUE"]
+    }
+  }
+}

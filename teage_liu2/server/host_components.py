@@ -8,7 +8,7 @@ config 形态::
 
     host_components:            # 缺省省略 = 全部插槽用 core 默认实现
       - slot: storage
-        backend: stdio-proxy    # 缺省 sqlite
+        backend: stdio-proxy    # 必填,∈ BACKENDS 注册表(协议 schema required;无默认值)
         options: {...}          # backend 私有选项
 
 未来扩展:新插槽 = SLOTS 加一行;新 backend = BACKENDS 注册一行,本体不改。
@@ -19,6 +19,8 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from ..core.config import check_host_components_segment
+from ..core.errors import CONFIG_INVALID_VALUE
 from ..core.extension_loader import ExtensionSpec, find_host_component, resolve_command
 from ..core.history import HistoryStore, SQLiteHistoryStore
 from ..core.storage import MessageStore, SQLiteStorageProvider, StorageProvider
@@ -59,21 +61,25 @@ def _stdio_proxy_backend(cfg: dict, options: dict,
     extension = options.get("extension")
     if command is not None and extension is not None:
         raise ValueError(
-            "stdio-proxy 的 options.command 与 options.extension 不可同时给出"
+            f"{CONFIG_INVALID_VALUE}: stdio-proxy 的 options.command 与 options.extension 不可同时给出"
         )
     if extension is not None:
         if specs is None:
             raise ValueError(
-                "options.extension 目录发现需要扩展扫描结果 specs"
+                f"{CONFIG_INVALID_VALUE}: options.extension 目录发现需要扩展扫描结果 specs"
                 "(load_host_components(cfg, specs) 须传入 wire_extensions 产物)"
             )
         if not isinstance(extension, str) or not extension:
-            raise ValueError(f"options.extension 必须是非空字符串,实际 {extension!r}")
+            raise ValueError(
+                f"{CONFIG_INVALID_VALUE}: options.extension 必须是非空字符串,实际 {extension!r}"
+            )
         spec = find_host_component(specs, extension, "storage")
         find_host_component(specs, extension, "history")  # stdio-proxy 双插槽都须声明
         args = options.get("args", [])
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-            raise ValueError(f"options.args 必须是字符串数组,实际 {args!r}")
+            raise ValueError(
+                f"{CONFIG_INVALID_VALUE}: options.args 必须是字符串数组,实际 {args!r}"
+            )
         command = resolve_command(spec.command or [], Path(spec.path)) + list(args)
     if (
         not isinstance(command, list)
@@ -81,13 +87,13 @@ def _stdio_proxy_backend(cfg: dict, options: dict,
         or not all(isinstance(c, str) and c for c in command)
     ):
         raise ValueError(
-            "stdio-proxy backend 需要 options.command(非空字符串数组)"
+            f"{CONFIG_INVALID_VALUE}: stdio-proxy backend 需要 options.command(非空字符串数组)"
             f"或 options.extension(扩展名),实际 {command!r}"
         )
     timeout = options.get("request_timeout_seconds", 10.0)
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
         raise ValueError(
-            f"stdio-proxy 的 request_timeout_seconds 必须为正数,实际 {timeout!r}"
+            f"{CONFIG_INVALID_VALUE}: stdio-proxy 的 request_timeout_seconds 必须为正数,实际 {timeout!r}"
         )
     proxy = StdioStorageProxy(command=command, request_timeout=float(timeout))
     # P2-12(2026-09-11 执行后审查):启动**前**先过插槽 ABC 自检 —— 此前 start()
@@ -123,29 +129,39 @@ def load_host_components(
     任何非法配置(未知插槽/未知 backend/重复接管/ABC 不满足)抛
     ValueError/TypeError = 启动失败(可读错误,不静默降级)。
     """
-    entries = cfg.get("host_components") or []
-    if not isinstance(entries, list):
-        raise ValueError(f"host_components 必须是数组,实际 {type(entries).__name__}")
+    # 结构类校验(数组 / 元素为映射 / 必填 slot·backend / 条目内未知键 / 值类型)
+    # = 协议 schema 唯一源(2026-09-18)。此前两处与 §config 契约冲突:
+    #   ① `cfg.get("host_components") or []` 使 null / {} / 0 / "" 等 falsy 非数组
+    #      被静默当成"缺省"(schema `type: array` 不允许);
+    #   ② `entry.get("backend", "sqlite")` 使键名拼错时静默回落内置实现
+    #      (schema `required` + spec §3"不静默降级、不回落内置实现"均不允许)。
+    raw_entries = cfg.get("host_components", None)
+    if raw_entries is None:
+        return {}   # 缺席/None = 契约允许的缺省:全部插槽用 core 默认实现
+    segment_problem = check_host_components_segment(raw_entries)
+    if segment_problem:
+        raise ValueError(segment_problem)
     loaded: Dict[str, Any] = {}
-    for i, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            raise ValueError(f"host_components[{i}] 必须是映射")
-        slot = entry.get("slot")
+    for i, entry in enumerate(raw_entries):
+        slot = entry["slot"]        # 必填由 schema 保证(缺失已在上一行拦截)
         if slot not in SLOTS:
             raise ValueError(
-                f"host_components[{i}] 未知插槽 {slot!r}(白名单: {sorted(SLOTS)})"
+                f"{CONFIG_INVALID_VALUE}: host_components[{i}] 未知插槽 {slot!r}"
+                f"(白名单: {sorted(SLOTS)})"
             )
         if slot in loaded:
-            raise ValueError(f"插槽 {slot!r} 被重复接管(host_components[{i}])")
-        backend = entry.get("backend", "sqlite")
+            raise ValueError(
+                f"{CONFIG_INVALID_VALUE}: 插槽 {slot!r} 被重复接管(host_components[{i}])"
+            )
+        backend = entry["backend"]  # 必填由 schema 保证;不再回落内置 sqlite
         registry = BACKENDS.get(slot, {})
         if backend not in registry:
             raise ValueError(
-                f"插槽 {slot!r} 未知 backend {backend!r}(可选: {sorted(registry)})"
+                f"{CONFIG_INVALID_VALUE}: 插槽 {slot!r} 未知 backend {backend!r}"
+                f"(可选: {sorted(registry)})"
             )
+        # options 的类型由协议 schema 保证(非映射已在段校验处拦截),此处不再重复检查
         options = entry.get("options") or {}
-        if not isinstance(options, dict):
-            raise ValueError(f"插槽 {slot!r} 的 options 必须是映射")
         objs = registry[backend](cfg, options, specs)
         if not isinstance(objs, dict) or not objs:
             raise TypeError(

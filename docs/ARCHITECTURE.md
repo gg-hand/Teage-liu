@@ -168,7 +168,7 @@ teage-liu/
 ├── tests/                      # 测试（见 §20）
 ├── data/                       # 运行时数据（见 §17）
 ├── docs/                       # 文档（架构/计划/SDK/超能力规格）
-├── config.yaml(.example) / config2.yaml / config-a2a-*.yaml   # 本地/双 Worker/A2A 配置
+├── config.yaml(.example) / config-liu2.yaml / config2.yaml / config-a2a-*.yaml   # 老系统 / liu2 新系统 / 双 Worker / A2A 配置
 ├── requirements.txt / .env.example
 ├── deploy.sh / restart.sh / start.sh / stop.sh / *.ps1 / teage-liu.service / nginx-teage-liu.conf   # 部署与运维
 ├── scripts/                    # 运维/验证脚本（collect_perf_metrics / verify_spec_coverage / package_deploy / _fetch_hot）

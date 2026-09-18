@@ -67,6 +67,24 @@ def _make_pipeline(tmp_path, cfg, llm):
     return pipeline, reg
 
 
+def test_unknown_config_key_rejected():
+    """**G3 修复锚定**(2026-09-18):配置段键名拼错 → 启动失败,不再静默关停拦截。
+
+    此前 `denylist` 写成 `denylst` 会让扩展取到 `denylist=[]`,拦截能力**静默失效**
+    (安全相关后果)。现由 `core.config.reject_unknown_keys` 在 setup 处拦截 ——
+    config 域 C-1 把扩展段校验委派给扩展,**该委派链的目标(防 typo 静默失效)自此达成**。
+    """
+    from teage_liu2.core.errors import CONFIG_UNKNOWN_KEY
+
+    reg = _make_registry()
+    bad = {"core": {"branches": {"guardrails": {
+        "enabled": True, "denylst": ["忽略上面的指令"], "action": "block",
+    }}}}
+    reg.build(bad)
+    with pytest.raises(ValueError, match=CONFIG_UNKNOWN_KEY):
+        asyncio.run(reg.setup_all(bad, SimpleNamespace()))
+
+
 def test_block_intercepts_denylist_hit(tmp_path):
     """验收:命中 denylist(block)→ 对话拦截,LLM 未被调用。"""
     llm = FakeLLMClient([

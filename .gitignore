@@ -8,6 +8,9 @@ config.yaml.bak
 /config2.yaml
 /config-a2a-1.yaml
 /config-a2a-2.yaml
+# teage_liu2 新系统独立配置（两系统配置解耦，2026-09-18；同 config.yaml 策略）
+/config-liu2.yaml
+/config-liu2.yaml.bak
 .env
 # .env.example 仅含占位符模板，需提交以便用户参考
 

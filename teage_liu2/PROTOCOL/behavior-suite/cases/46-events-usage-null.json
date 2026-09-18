@@ -1,0 +1,22 @@
+{
+  "id": "events-usage-null-46",
+  "protocol_version": "v1.0.0",
+  "description": "events usage 族可空语义(P-10): provider 未上报 usage(经 inputs.llm_no_usage 驱动,done 帧不含 usage 键) → step_end.usage 与 done.usage 均为 null 且事件流正常收尾(normal)。锚定 errata 语义: null = 未上报为合法值,不强制 object;与「上报但为空 = {}」区分。",
+  "setup": { "extensions": [] },
+  "inputs": {
+    "session_id": "s-46",
+    "user_input": "hi",
+    "llm_no_usage": true
+  },
+  "expected": {
+    "event_stream": [
+      { "type": "step_start", "payload": { "step": 1 } },
+      { "type": "step_end", "payload": { "usage": null } },
+      {
+        "type": "done",
+        "payload": { "termination_reason": "normal", "usage": null }
+      }
+    ],
+    "final": { "termination_reason": "normal" }
+  }
+}

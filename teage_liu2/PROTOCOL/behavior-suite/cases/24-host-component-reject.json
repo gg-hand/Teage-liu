@@ -1,7 +1,7 @@
 {
   "id": "host-component-reject-24",
   "protocol_version": "v1.0.0",
-  "description": "P-5/P-6 快速失败矩阵: 非法宿主组件配置一律**启动失败**(可读错误,不静默降级、不回落内置实现) —— 未知插槽 / 未知 backend / 插槽重复接管 / options.command 与 options.extension 同给 / 引用 kind:branch 扩展。",
+  "description": "P-5/P-6 快速失败矩阵: 非法宿主组件配置一律**启动失败**(可读错误,不静默降级、不回落内置实现) —— 未知插槽 / 未知 backend / **缺必填 backend(键名拼错亦落入此)** / **条目内未知键(schema additionalProperties:false)** / 插槽重复接管 / options.command 与 options.extension 同给 / 引用 kind:branch 扩展。前两类与后五类分别由『协议 schema 结构校验』与『装载器语义校验』承载(2026-09-18: schema 成为结构类校验的运行时唯一源)。",
   "setup": { "extensions": [] },
   "inputs": {
     "rejects": [
@@ -16,6 +16,18 @@
         "manifest_kind": "host-component",
         "host_components": [{ "slot": "storage", "backend": "nope" }],
         "expect_regex": "未知 backend"
+      },
+      {
+        "label": "missing_backend",
+        "manifest_kind": "host-component",
+        "host_components": [{ "slot": "storage" }],
+        "expect_regex": "缺少必填字段"
+      },
+      {
+        "label": "unknown_entry_key",
+        "manifest_kind": "host-component",
+        "host_components": [{ "slot": "storage", "backend": "sqlite", "optons": {} }],
+        "expect_regex": "不允许字段"
       },
       {
         "label": "duplicate_slot",
@@ -57,9 +69,9 @@
       {
         "type": "custom:host_component_reject",
         "payload": {
-          "case_count": 5,
-          "rejected_count": 5,
-          "matched_count": 5,
+          "case_count": 7,
+          "rejected_count": 7,
+          "matched_count": 7,
           "all_rejected": true
         }
       }

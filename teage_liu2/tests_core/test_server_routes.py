@@ -111,6 +111,58 @@ def _make_app(
     return app_mod.create_app(config=cfg)
 
 
+def test_create_app_requires_liu2_config_and_never_falls_back(tmp_path, monkeypatch):
+    """**Phase 2 锚定**(2026-09-18):缺失 liu2 配置 → 启动失败,**绝不回落 config.yaml**。
+
+    此前末位回落是 `config.yaml`(老系统配置)→ liu2 会静默读到老系统配置
+    (历史上 `storage.sqlite_path` 正因此指向老系统会话库)。现改为 fail-closed。
+    """
+    import teage_liu2.server.app as app_mod
+    from teage_liu2.core.errors import CONFIG_MISSING_KEY
+
+    # 空目录 + 无 TEAGE2_CONFIG → 既无 config-liu2.yaml 也无 config.yaml
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TEAGE2_CONFIG", raising=False)
+    with pytest.raises(ValueError, match=CONFIG_MISSING_KEY):
+        app_mod.create_app()
+
+    # 即便放一份老系统的 config.yaml,也必须**不**被采用(证明无回落)
+    (tmp_path / "config.yaml").write_text("core: {}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=CONFIG_MISSING_KEY):
+        app_mod.create_app()
+
+
+def test_create_app_rejects_host_segment_unknown_key(tmp_path, monkeypatch):
+    """**Phase 3 锚定**(2026-09-18,修 G2):宿主段键名拼错 → 启动失败(可读 CONFIG_*)。
+
+    校验必须**先于一切构造**(尤其先于 LLMClient):否则 `main_base_urll` 这类 typo
+    被静默回落成 provider 默认端点 —— 正是 G2 的原始症状(请求可能发往非预期端点)。
+    """
+    import teage_liu2.server.app as app_mod
+    from teage_liu2.core.errors import CONFIG_UNKNOWN_KEY
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TEAGE2_CONFIG", raising=False)
+    (tmp_path / "config-liu2.yaml").write_text(
+        "llm:\n  main_base_urll: https://x\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=CONFIG_UNKNOWN_KEY):
+        app_mod.create_app()
+
+
+def test_create_app_rejects_non_mapping_config_root():
+    """审查补锚定(2026-09-18):配置根非映射 → `CONFIG_INVALID_VALUE`(而非 `AttributeError`)。
+
+    退化:把 `check_declared_segments(cfg)` 移到 `cfg.get("_config_path")` **之后**
+    → 本测试红(list 没有 `.get`,校验内的非映射分支不可达)。
+    """
+    import teage_liu2.server.app as app_mod
+    from teage_liu2.core.errors import CONFIG_INVALID_VALUE
+
+    with pytest.raises(ValueError, match=CONFIG_INVALID_VALUE):
+        app_mod.create_app(config=["not", "a", "mapping"])
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     with TestClient(_make_app(tmp_path, monkeypatch)) as c:
@@ -218,6 +270,52 @@ def test_reload_replays_resource_limits(tmp_path, monkeypatch):
     assert limits["max_snapshot_bytes"] == yaml_max["max_snapshot_bytes"]
     assert limits["max_message_bytes"] == yaml_max["max_message_bytes"]
     assert limits["max_messages_per_conversation"] == yaml_max["max_messages_per_conversation"]
+
+
+def test_reload_rejects_host_segment_unknown_key(tmp_path, monkeypatch):
+    """**Phase 3 锚定**(2026-09-18):/reload 与启动路径**同口径**拒绝非法宿主段。
+
+    退化:`routes.reload` 漏掉 `check_declared_segments` → 本测试红
+    (热重载将成为绕过启动校验的后门:"启动拒绝、reload 接受")。
+    """
+    from teage_liu2.core.errors import CONFIG_UNKNOWN_KEY
+
+    app = _make_app(tmp_path, monkeypatch)
+    with TestClient(app) as c:
+        cfg_path = tmp_path / "config.yaml"
+        with open(cfg_path, encoding="utf-8") as f:
+            ycfg = yaml.safe_load(f)
+        ycfg["llm"]["consolidation_providerr"] = "deepseek"  # 键名拼错
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(ycfg, f, allow_unicode=True)
+        r = c.post("/reload")
+    assert r.status_code == 400, r.text
+    assert CONFIG_UNKNOWN_KEY in r.json()["error"]
+    assert "consolidation_providerr" in r.json()["error"]
+
+
+def test_reload_rejects_invalid_host_components_segment(tmp_path, monkeypatch):
+    """审查补锚定(2026-09-18):/reload 亦校验 `host_components` **段结构**(与启动同口径)。
+
+    该路径不重装宿主组件(装配含 spawn 子进程),此前对该段零校验 → 同一份文件在
+    启动与 reload 两条路径上判定不一致。退化:删掉 `routes.reload` 里的
+    `check_host_components_segment` → 本测试红。
+    """
+    from teage_liu2.core.errors import CONFIG_UNKNOWN_KEY
+
+    app = _make_app(tmp_path, monkeypatch)
+    with TestClient(app) as c:
+        cfg_path = tmp_path / "config.yaml"
+        with open(cfg_path, encoding="utf-8") as f:
+            ycfg = yaml.safe_load(f)
+        # 条目内未知键 = 结构类(由 schema 拦);不是语义类(未知 backend),后者只在启动期校验
+        ycfg["host_components"] = [{"slot": "storage", "backend": "sqlite", "weird": 1}]
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(ycfg, f, allow_unicode=True)
+        r = c.post("/reload")
+    assert r.status_code == 400, r.text
+    assert CONFIG_UNKNOWN_KEY in r.json()["error"]
+    assert "weird" in r.json()["error"]
 
 
 def test_app_shutdown_drains_writer_before_store_close(tmp_path, monkeypatch):

@@ -907,11 +907,15 @@ def _build_fake_llm(inputs: Dict[str, Any]) -> FakeLLMClient:
         return FakeLLMClient(script)
 
     # 默认:单轮 end_turn(02/05/09/13 等)
-    script.append({
+    # llm_no_usage(P-10 条件②):provider 未上报 usage —— 脚本项不含 usage 键,
+    # FakeLLMClient 经 resp.get("usage") 得 None,驱动 usage 族可空语义用例。
+    default_resp: Dict[str, Any] = {
         "content": [_text_block("好的")],
         "stop_reason": "end_turn",
-        "usage": {"input_tokens": 5, "output_tokens": 3},
-    })
+    }
+    if not inputs.get("llm_no_usage"):
+        default_resp["usage"] = {"input_tokens": 5, "output_tokens": 3}
+    script.append(default_resp)
     return FakeLLMClient(script)
 
 
@@ -1533,7 +1537,7 @@ async def _run_config_case(case: Dict[str, Any],
     custom_events 由调用方传入并就地追加 —— 错误码断言在 _run_protocol_case
     末尾统一做(它扫描 custom_events 序列化文本取码)。
     """
-    from teage_liu2.core.config import core_config_from
+    from teage_liu2.core.config import check_declared_segments, core_config_from
 
     inputs = case.get("inputs") or {}
     errors: List[str] = []
@@ -1569,6 +1573,41 @@ async def _run_config_case(case: Dict[str, Any],
             "observed_codes": list(dict.fromkeys(observed)),
         },
     })
+
+    # 宿主段(llm / storage)结构校验(2026-09-18 Phase 3,修 G2):键集由协议 schema
+    # 声明、实现侧零白名单(段清单由 schema 的 $ref + additionalProperties:false 推导),
+    # 故用例只驱动入口并断言错误码,不复制键清单(复制即第二份事实源)。
+    host_inputs = inputs.get("host_segments")
+    if host_inputs is not None:
+        host_valid_ok = True
+        for item in host_inputs.get("valid") or []:
+            try:
+                check_declared_segments(item)
+            except ValueError as e:
+                host_valid_ok = False
+                errors.append(f"合法宿主段被拒: {e}")
+        host_observed: List[str] = []
+        host_all_carry = True
+        host_invalid = host_inputs.get("invalid") or []
+        for item in host_invalid:
+            try:
+                check_declared_segments(item["cfg"])
+                host_all_carry = False
+                errors.append(f"{item['label']}: 期望抛错但通过")
+            except ValueError as e:
+                host_observed.extend(_extract_codes(str(e)))
+                if item["code"] not in str(e):
+                    host_all_carry = False
+                    errors.append(f"{item['label']}: 错误消息未携带 {item['code']}: {e}")
+        custom_events.append({
+            "type": "custom:config_host_segment_result",
+            "payload": {
+                "host_valid_ok": host_valid_ok,
+                "host_all_invalid_carry_code": host_all_carry,
+                "host_invalid_count": len(host_invalid),
+                "observed_codes": list(dict.fromkeys(host_observed)),
+            },
+        })
 
     # C-2 敏感字段(WP-B 用例 39):${VAR} 占位注入 + 脱敏 —— 密钥明文不得出现在错误消息
     env_spec = inputs.get("env") or {}
@@ -1999,6 +2038,7 @@ async def run_case(case: Dict[str, Any], verbose: bool) -> _CaseResult:
         "events-unknown-type-33",    # 注:34/35/36 是 pipeline 类,不入本表
         "types-doc-opaque-37",       # 注:38 是 pipeline 类,不入本表
         "config-domain-secret-39",
+        "config-domain-host-segment-47",
     }
     # 错误码"日志面"捕获(错误码断言的唯一日志通道)
     capture = _LogCapture()

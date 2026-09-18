@@ -341,7 +341,7 @@ a2a:
 # ============================================================
 # host_components:
 #   - slot: storage           # 当前唯一插槽（同时接管 storage + history 双通道）
-#     backend: stdio-proxy    # 或省略整段 = sqlite 默认
+#     backend: stdio-proxy    # 必填(协议 schema required,无缺省);或省略整个 host_components 段 = 内置 SQLite
 #     options:
 #       command: ["python", "/path/to/storage_backend.py", "/path/to/data"]
 #       request_timeout_seconds: 10   # 建议 5-10s（历史重建读路径同步等待）

@@ -972,7 +972,7 @@ def _create_backend(
     """根据 provider 创建对应异步 Backend 实例。"""
     provider_lower = (provider or "").lower().strip()
     if not provider_lower:
-        raise ValueError("provider 未设置,请在 config.yaml 中配置 llm.main_provider")
+        raise ValueError("provider 未设置,请在运行配置文件中配置 llm.main_provider")
 
     if provider_lower == "anthropic":
         return AsyncAnthropicBackend(model=model, api_key=api_key, base_url=base_url)

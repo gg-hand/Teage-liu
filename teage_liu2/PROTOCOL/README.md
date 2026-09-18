@@ -45,6 +45,8 @@
 - **聚合观测事件**：`custom:stdio_result` / `custom:host_component_result` / `custom:host_component_reject` / `custom:pipeline_l3_result` / `custom:events_result` / `custom:config_secret_result`；
 - **P-4 参考后端** `tools/reference_storage_backend.py`：独立于 `teage_liu2.core` 的第二个 P-4 实现（标准库 sqlite3），作为用例 22/26/37 的被测子进程，用以印证"任意语言可按 P-4 实现"。
 
+**宿主段配置校验收紧（2026-09-18，errata 修 G2，见 PENDING P-11）**：新增用例 `config-domain-host-segment-47` —— 宿主段 `llm` / `storage` 改由协议 schema 运行时校验（实现零白名单）：未知键 → `CONFIG_UNKNOWN_KEY`（含老系统专属键 `llm.context_threshold` / `storage.session_ttl_days` / `storage.cleanup_interval_hours`）、类型收紧（数字字符串被拒）与范围 → `CONFIG_INVALID_VALUE`、缺席与 YAML 空段（`null`）为合法缺省。`inputs` 新键 `host_segments`（`{valid: [cfg…], invalid: [{label, cfg, code}…]}`）；聚合观测事件 `custom:config_host_segment_result`。用例只断言错误码、**不复制键清单**（键清单唯一源 = `config.schema.json`）。套件规模 **46 → 47 条**。
+
 ## 条款编号约定（2026-09-11）
 
 各域条款编号**域内唯一**：`types T-*` / `transport T-*` / `hooks H-*` / `events E-*` / `lifecycle L-*` / `storage S-*` / `config C-*` / `errors R-*`。**跨域引用必须带域名前缀**（如 `transport T-5`、`types T-8`）—— types 与 transport 两域历史上都使用 `T-*`，无前缀即歧义；既有编号一律不改（避免破坏 PENDING 与既有引用）。

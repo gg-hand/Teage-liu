@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
@@ -17,7 +18,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from ..core.config import core_config_from, load_config
+from ..core.config import check_declared_segments, core_config_from, load_config
+from ..core.errors import CONFIG_MISSING_KEY
 from ..core.event_stream import EventStream, L3BatchSink
 from ..core.history import SQLiteHistoryStore
 from ..core.hooks import CAP_OBSERVE, Branch, HookChain
@@ -116,17 +118,56 @@ def register_inprocess_extension_identities(transport_bus: Any, registry: Branch
         logger.info("同语言扩展 %s 身份已注册(kind 前缀=%s.*)", branch.name, branch.name)
 
 
+#: liu2 默认配置文件名(2026-09-18 Phase 2)。
+#: **不再回落老系统的 `config.yaml`** —— 那是老系统的配置文件,静默回落会让 liu2
+#: 读到老系统配置(历史上 `storage.sqlite_path` 正因此指向老系统会话库)。
+DEFAULT_CONFIG_PATH = "config-liu2.yaml"
+
+
 def create_app(
-    config_path: str = "config.yaml",
+    config_path: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> FastAPI:
     """装配应用。
 
+    配置来源优先级(2026-09-18 解耦 + Phase 2 取消回落):
+    ① `config` 参数(测试/嵌入) ② `config_path` 参数 ③ 环境变量 `TEAGE2_CONFIG`
+    ④ `config-liu2.yaml`(liu2 默认)。
+
+    ⚠ **不再回落老系统的 `config.yaml`**(Phase 2,2026-09-18):静默回落会让 liu2
+    读到老系统配置(历史上 `storage.sqlite_path` 正因此指向老系统会话库),故缺失
+    即**启动失败**(带 `CONFIG_MISSING_KEY` 的可读错误),不静默换用别的文件。
+
     主干契约:配置开了但初始化失败(LLM API Key 缺失 / 存储打不开 /
     枝干 setup 失败 / 未知枝干名)→ 抛错,启动失败并给出可读错误 —— 不静默降级。
     """
-    cfg = config if config is not None else load_config(config_path)
-    config_path = cfg.get("_config_path", config_path)
+    if config is None:
+        config_path = config_path or os.getenv("TEAGE2_CONFIG") or DEFAULT_CONFIG_PATH
+        _resolved = Path(config_path)
+        if not _resolved.is_absolute():
+            _resolved = Path.cwd() / _resolved
+        if not _resolved.exists():
+            raise ValueError(
+                f"{CONFIG_MISSING_KEY}: liu2 配置文件不存在: {_resolved}。"
+                f"liu2 不再回落到老系统的 config.yaml(Phase 2,2026-09-18);"
+                f"请用 TEAGE2_CONFIG 指定,或创建 {DEFAULT_CONFIG_PATH}"
+                f"(参考 start_liu2.ps1)。"
+            )
+        cfg = load_config(config_path)
+    else:
+        cfg = config
+
+    # 0. 宿主段严格校验(2026-09-18 Phase 3,修 G2):llm / storage 的键集由协议 schema
+    #    声明(零白名单),core_config_from 的 core 段手写校验仍在其后。
+    #    位置有两条硬约束:①**先于一切构造** —— 否则 llm 段的类型错误会先以原始异常
+    #    暴露(如 max_context_tokens="abc" 在 LLMClient 内 int() 抛 ValueError),
+    #    掩盖可读的 CONFIG_* 报错,键名 typo 更会静默回落(本项修复的原始症状);
+    #    ②**先于 cfg 的任何字段读取**(含下面 `_config_path`)—— 否则配置根非映射时
+    #    先抛 AttributeError,校验内的 CONFIG_INVALID_VALUE 分支不可达(2026-09-18 审查修)。
+    check_declared_segments(cfg)
+
+    # _config_path 为文件内可选声明(config.yaml 历史带此键);缺失时回落实际加载路径。
+    config_path = cfg.get("_config_path") or config_path or DEFAULT_CONFIG_PATH
 
     # 1. LLM 客户端(失败抛错 = 启动失败)
     llm_client = LLMClient(config_path=config_path, config=cfg)
